@@ -81,6 +81,22 @@ input:focus, select:focus { border-color: #5eb7ff; box-shadow: 0 0 0 3px rgba(76
 .primary-button { width: 100%; color: #fff; background: linear-gradient(135deg, #1595ff, #0b57b5); box-shadow: 0 12px 30px rgba(18, 126, 229, .28); }
 .primary-button:not(:disabled):hover, .ghost-button:not(:disabled):hover, .danger-button:hover { transform: translateY(-2px); }
 .primary-button:disabled, .ghost-button:disabled { opacity: .42; }
+.team-picker { margin-top: 20px; }
+.team-picker-title { display: block; font-size: 12px; font-weight: 900; letter-spacing: .08em; color: #9fc6e4; text-transform: uppercase; }
+.team-picker-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.team-option {
+  display: grid; gap: 4px; justify-items: start; text-align: left;
+  padding: 16px; border-radius: 14px; color: #fff; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.16);
+  transition: transform .14s ease, opacity .14s ease, box-shadow .14s ease;
+}
+.team-option.blue { background: linear-gradient(135deg, #1577d8, #0b3f80); box-shadow: 0 12px 30px rgba(18, 126, 229, .25); }
+.team-option.red { background: linear-gradient(135deg, #d94848, #7d1d1d); box-shadow: 0 12px 30px rgba(229, 60, 60, .22); }
+.team-option strong { font-size: 18px; }
+.team-option-status { font-size: 12px; font-weight: 900; }
+.team-option-members { font-size: 11px; color: rgba(255,255,255,.72); }
+.team-option:not(:disabled):hover { transform: translateY(-2px); }
+.team-option:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 small { display: block; margin-top: 12px; color: #7e96ab; }
 
 .setup-banner, .toast {

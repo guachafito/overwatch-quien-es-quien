@@ -52,24 +52,30 @@ export async function createRoom(
   throw new Error('No se pudo generar un código de sala único. Inténtalo de nuevo.')
 }
 
-export async function joinRoom(
-  supabase: SupabaseClient,
-  code: string,
-  team: Team,
-  slot: Slot,
-  displayName: string,
-) {
-  const { data, error } = await supabase.rpc('join_room', {
+export type RoomOccupant = { team: Team; slot: Slot; display_name: string; is_me: boolean }
+
+export async function getRoomAvailability(supabase: SupabaseClient, code: string) {
+  const { data, error } = await supabase.rpc('room_availability', { p_code: code.trim().toUpperCase() })
+  if (error) throw error
+  return (data ?? []) as RoomOccupant[]
+}
+
+export async function joinTeam(supabase: SupabaseClient, code: string, team: Team, displayName: string) {
+  const { data, error } = await supabase.rpc('join_team', {
     p_code: code.trim().toUpperCase(),
     p_display_name: displayName.trim().slice(0, 24) || 'Jugador',
     p_team: team,
-    p_slot: slot,
   })
   if (error) throw error
   if (!data?.[0]) throw new Error('No se pudo entrar en la sala.')
   const room = await getRoomById(supabase, (data[0] as { room_id: string }).room_id)
   if (!room) throw new Error('Sala no encontrada.')
   return room
+}
+
+export async function leaveRoom(supabase: SupabaseClient, roomId: string) {
+  const { error } = await supabase.rpc('leave_room', { p_room_id: roomId })
+  if (error) throw error
 }
 
 export async function getRoomByCode(supabase: SupabaseClient, code: string) {

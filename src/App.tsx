@@ -7,10 +7,13 @@ import {
   getRoomByCode,
   getTeamBoard,
   getTeamMessages,
-  joinRoom,
+  getRoomAvailability,
+  joinTeam,
+  leaveRoom as leaveRoomRpc,
   resetTeamBoard,
   toggleCard,
 } from './game'
+import type { RoomOccupant } from './game'
 import type { ChatMessage, CursorState, Player, Room, Slot, Team, TeamBoard } from './types'
 
 const TEAM_NAMES: Record<Team, string> = { 1: 'Equipo Azul', 2: 'Equipo Rojo' }
@@ -115,8 +118,8 @@ function App() {
   const chatMutedRef = useRef(chatMuted)
   const [name, setName] = useState('')
   const [joinCode, setJoinCode] = useState(new URLSearchParams(window.location.search).get('room') ?? '')
-  const [joinTeam, setJoinTeam] = useState<Team>(2)
-  const [joinSlot, setJoinSlot] = useState<Slot>(3)
+  // Puestos ocupados de la sala buscada; null mientras no se haya encontrado ninguna.
+  const [lookup, setLookup] = useState<{ code: string; occupants: RoomOccupant[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -127,6 +130,7 @@ function App() {
   const currentDownRef = useRef(false)
   const localCursorRef = useRef<CursorState | null>(null)
   const initializedRef = useRef(false)
+  const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
 
   const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
   const sortedPlayers = useMemo(
@@ -406,22 +410,44 @@ function App() {
     }
   }
 
-  function handleTeamChange(nextTeam: Team) {
-    setJoinTeam(nextTeam)
-    setJoinSlot(nextTeam === 1 ? 1 : 3)
+  function handleJoinCodeChange(value: string) {
+    setJoinCode(value)
+    setLookup(null)
   }
 
-  async function handleJoin(event: FormEvent) {
+  async function handleFindRoom(event: FormEvent) {
     event.preventDefault()
     if (!supabase) return setError('No se ha inicializado la conexión con Supabase.')
+    const code = joinCode.trim().toUpperCase()
     setBusy(true)
     setError('')
     try {
-      const joinedRoom = await joinRoom(supabase, joinCode, joinTeam, joinSlot, name)
+      await pendingLeaveRef.current
+      setLookup({ code, occupants: await getRoomAvailability(supabase, code) })
+    } catch (caught) {
+      setLookup(null)
+      setError(errorText(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handlePickTeam(team: Team) {
+    if (!supabase || !lookup) return
+    setBusy(true)
+    setError('')
+    try {
+      await pendingLeaveRef.current
+      const joinedRoom = await joinTeam(supabase, lookup.code, team, name)
       await enterRoom(joinedRoom)
+      setLookup(null)
       setNotice(`Has entrado en ${joinedRoom.code}.`)
     } catch (caught) {
       setError(errorText(caught))
+      // Otro jugador pudo ocupar el puesto mientras tanto: refresca los huecos.
+      getRoomAvailability(supabase, lookup.code)
+        .then((occupants) => setLookup({ code: lookup.code, occupants }))
+        .catch(() => setLookup(null))
     } finally {
       setBusy(false)
     }
@@ -467,6 +493,12 @@ function App() {
   }
 
   function leaveRoom() {
+    if (supabase && room) {
+      // Libera el puesto para poder volver a entrar en cualquier equipo.
+      pendingLeaveRef.current = leaveRoomRpc(supabase, room.id).catch((caught) => setError(errorText(caught)))
+      setJoinCode(room.code)
+    }
+    setLookup(null)
     setRoom(null)
     setPlayer(null)
     setPlayers([])
@@ -504,16 +536,14 @@ function App() {
         name={name}
         setName={setName}
         joinCode={joinCode}
-        setJoinCode={setJoinCode}
-        joinTeam={joinTeam}
-        setJoinTeam={handleTeamChange}
-        joinSlot={joinSlot}
-        setJoinSlot={setJoinSlot}
+        setJoinCode={handleJoinCodeChange}
+        lookup={lookup}
         busy={busy}
         error={error}
         notice={notice}
         onCreate={handleCreate}
-        onJoin={handleJoin}
+        onFindRoom={handleFindRoom}
+        onPickTeam={handlePickTeam}
       />
     )
   }
@@ -597,17 +627,15 @@ function LandingScreen(props: {
   setName: (value: string) => void
   joinCode: string
   setJoinCode: (value: string) => void
-  joinTeam: Team
-  setJoinTeam: (value: Team) => void
-  joinSlot: Slot
-  setJoinSlot: (value: Slot) => void
+  lookup: { code: string; occupants: RoomOccupant[] } | null
   busy: boolean
   error: string
   notice: string
   onCreate: (event: FormEvent) => void
-  onJoin: (event: FormEvent) => void
+  onFindRoom: (event: FormEvent) => void
+  onPickTeam: (team: Team) => void
 }) {
-  const occupiedHint = props.joinCode.trim() ? 'El puesto se valida al entrar en la sala.' : 'Primero escribe el código de la sala.'
+  const { lookup } = props
 
   return (
     <div className="app-shell lobby-shell">
@@ -640,46 +668,58 @@ function LandingScreen(props: {
           </button>
         </form>
 
-        <form className="panel" onSubmit={props.onJoin}>
+        <form className="panel" onSubmit={props.onFindRoom}>
           <span className="panel-label">JUGADOR</span>
           <h2>Unirse a una partida</h2>
-          <label>
-            Código de sala
-            <input value={props.joinCode} onChange={(event) => props.setJoinCode(event.target.value.toUpperCase())} maxLength={5} placeholder="ABCDE" />
-          </label>
-          <label>
-            Tu nombre
-            <input value={props.name} onChange={(event) => props.setName(event.target.value)} maxLength={24} placeholder="Jugador 2" />
-          </label>
           <div className="two-fields">
             <label>
-              Equipo
-              <select value={props.joinTeam} onChange={(event) => props.setJoinTeam(Number(event.target.value) as Team)}>
-                <option value={1}>Equipo Azul</option>
-                <option value={2}>Equipo Rojo</option>
-              </select>
+              Código de sala
+              <input value={props.joinCode} onChange={(event) => props.setJoinCode(event.target.value.toUpperCase())} maxLength={5} placeholder="ABCDE" />
             </label>
             <label>
-              Puesto
-              <select value={props.joinSlot} onChange={(event) => props.setJoinSlot(Number(event.target.value) as Slot)}>
-                {props.joinTeam === 1 ? (
-                  <>
-                    <option value={1}>Jugador 1</option>
-                    <option value={2}>Jugador 2</option>
-                  </>
-                ) : (
-                  <>
-                    <option value={3}>Jugador 3</option>
-                    <option value={4}>Jugador 4</option>
-                  </>
-                )}
-              </select>
+              Tu nombre
+              <input value={props.name} onChange={(event) => props.setName(event.target.value)} maxLength={24} placeholder="Jugador 2" />
             </label>
           </div>
-          <button className="primary-button" disabled={props.busy || !props.joinCode.trim() || !props.name.trim()}>
-            {props.busy ? 'Entrando…' : 'Unirme'}
-          </button>
-          <small>{occupiedHint}</small>
+
+          {lookup ? (
+            <div className="team-picker">
+              <span className="team-picker-title">Sala {lookup.code} · elige equipo</span>
+              <div className="team-picker-options">
+                {([1, 2] as Team[]).map((team) => {
+                  const members = lookup.occupants.filter((occupant) => occupant.team === team)
+                  const isMine = members.some((occupant) => occupant.is_me)
+                  const free = 2 - members.length
+                  const disabled = props.busy || !props.name.trim() || (free === 0 && !isMine)
+                  return (
+                    <button
+                      type="button"
+                      key={team}
+                      className={`team-option ${TEAM_COLORS[team]}`}
+                      disabled={disabled}
+                      onClick={() => props.onPickTeam(team)}
+                    >
+                      <strong>{TEAM_NAMES[team]}</strong>
+                      <span className="team-option-status">
+                        {isMine ? 'Ya estás aquí · volver' : free === 0 ? 'Completo' : `${free} ${free === 1 ? 'hueco libre' : 'huecos libres'}`}
+                      </span>
+                      <span className="team-option-members">
+                        {members.length ? members.map((occupant) => occupant.display_name).join(' · ') : 'Sin jugadores'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+              {!props.name.trim() && <small>Escribe tu nombre para poder elegir equipo.</small>}
+            </div>
+          ) : (
+            <>
+              <button className="primary-button" disabled={props.busy || !props.joinCode.trim() || !props.name.trim()}>
+                {props.busy ? 'Buscando…' : 'Unirme'}
+              </button>
+              <small>{props.joinCode.trim() ? 'Al encontrar la sala podrás elegir equipo.' : 'Primero escribe el código de la sala.'}</small>
+            </>
+          )}
         </form>
       </div>
 
