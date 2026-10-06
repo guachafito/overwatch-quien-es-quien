@@ -285,6 +285,16 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .remote-cursor span { position: absolute; left: 34px; top: 36px; white-space: nowrap; padding: 4px 6px; border-radius: 6px; font-size: 10px; font-weight: 900; background: rgba(0,0,0,.72); color: #fff; border: 1px solid rgba(255,255,255,.14); }
 .remote-cursor.blue span { border-left: 2px solid #2f9aff; }
 .remote-cursor.red span { border-left: 2px solid #ef5656; }
+/* Cursor propio: el nativo del sistema con la imagen del jugador, sin latencia. */
+.game-shell.own-cursor, .game-shell.own-cursor * { cursor: var(--own-cursor) !important; }
+.game-shell.own-cursor.pointer-down, .game-shell.own-cursor.pointer-down * { cursor: var(--own-cursor-down) !important; }
+.own-cursor-label {
+  position: fixed; left: 0; top: 0; opacity: 0; will-change: transform;
+  white-space: nowrap; padding: 4px 6px; border-radius: 6px; font-size: 10px; font-weight: 900;
+  background: rgba(0,0,0,.72); color: #fff; border: 1px solid rgba(255,255,255,.14);
+}
+.own-cursor-label.blue { border-left: 2px solid #2f9aff; }
+.own-cursor-label.red { border-left: 2px solid #ef5656; }
 .mobile-room-chip { display: none; }
 
 .setup-instructions { max-width: 760px; margin: 0 auto; line-height: 1.7; color: #a9bdcf; }

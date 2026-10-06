@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { ensureAnonymousSession, isSupabaseConfigured, supabase } from './supabase'
 import {
@@ -34,6 +34,56 @@ function getSlotCursorFile(slot: Slot, down: boolean) {
   return down
     ? `${import.meta.env.BASE_URL}cursors/cursoragarrando.png`
     : `${import.meta.env.BASE_URL}cursors/cursor.png`
+}
+
+// Tamaño y punto activo con los que se dibujan los cursores remotos (ver .remote-cursor en styles.css).
+const CURSOR_SIZE = 58
+const CURSOR_HOTSPOT = 4
+const OWN_LABEL_OFFSET = { x: 30, y: 32 }
+
+// Los navegadores no admiten cursores nativos de más de 128 px, así que los PNG se reducen en un canvas.
+function scaleCursor(src: string) {
+  return new Promise<string>((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = CURSOR_SIZE
+      canvas.height = CURSOR_SIZE
+      const context = canvas.getContext('2d')
+      if (!context) return reject(new Error('Canvas no disponible'))
+      context.imageSmoothingQuality = 'high'
+      context.drawImage(image, 0, 0, CURSOR_SIZE, CURSOR_SIZE)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    image.onerror = reject
+    image.src = src
+  })
+}
+
+function useScaledCursors(slot: Slot | undefined) {
+  const [cursors, setCursors] = useState<{ up: string; down: string } | null>(null)
+
+  useEffect(() => {
+    setCursors(null)
+    if (!slot) return
+    let alive = true
+    Promise.all([scaleCursor(getSlotCursorFile(slot, false)), scaleCursor(getSlotCursorFile(slot, true))])
+      .then(([up, down]) => {
+        if (alive) setCursors({ up, down })
+      })
+      .catch(() => {
+        // Si las imágenes no cargan se queda el cursor normal del sistema.
+      })
+    return () => {
+      alive = false
+    }
+  }, [slot])
+
+  return cursors
+}
+
+function cursorCss(dataUrl: string) {
+  return `url("${dataUrl}") ${CURSOR_HOTSPOT} ${CURSOR_HOTSPOT}, auto`
 }
 
 function errorText(error: unknown) {
@@ -131,6 +181,9 @@ function App() {
   const localCursorRef = useRef<CursorState | null>(null)
   const initializedRef = useRef(false)
   const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
+  const shellRef = useRef<HTMLDivElement>(null)
+  const ownLabelRef = useRef<HTMLDivElement>(null)
+  const ownCursorImages = useScaledCursors(player?.slot)
 
   const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
   const sortedPlayers = useMemo(
@@ -265,7 +318,7 @@ function App() {
       .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: true }, presence: { key: player.user_id } } })
       .on('broadcast', { event: 'cursor' }, ({ payload }) => {
         const cursor = payload as CursorState
-        if (!cursor?.userId) return
+        if (!cursor?.userId || cursor.userId === player.user_id) return
         setCursorStates((current) => ({ ...current, [cursor.userId]: cursor }))
       })
       .on('presence', { event: 'sync' }, () => {
@@ -348,7 +401,6 @@ function App() {
       }
       const payload: CursorState = { ...state, down, ts: Date.now() }
       localCursorRef.current = payload
-      setCursorStates((current) => ({ ...current, [player.user_id]: payload }))
       await channel.send({ type: 'broadcast', event: 'cursor', payload })
     },
     [player, room],
@@ -368,7 +420,12 @@ function App() {
         ts: Date.now(),
       }
       localCursorRef.current = state
-      setCursorStates((current) => ({ ...current, [player.user_id]: state }))
+      // El cursor propio es el nativo del sistema; aquí solo se mueve la etiqueta, sin pasar por React.
+      const label = ownLabelRef.current
+      if (label) {
+        label.style.transform = `translate3d(${event.clientX + OWN_LABEL_OFFSET.x}px, ${event.clientY + OWN_LABEL_OFFSET.y}px, 0)`
+        label.style.opacity = '1'
+      }
       const now = performance.now()
       if (now - lastCursorSentRef.current < 35) return
       lastCursorSentRef.current = now
@@ -376,21 +433,28 @@ function App() {
     }
     const down = () => {
       currentDownRef.current = true
+      shellRef.current?.classList.add('pointer-down')
       void sendCursor(cursorChannelRef.current, true, true)
     }
     const up = () => {
       currentDownRef.current = false
+      shellRef.current?.classList.remove('pointer-down')
       void sendCursor(cursorChannelRef.current, false, true)
+    }
+    const hideLabel = () => {
+      if (ownLabelRef.current) ownLabelRef.current.style.opacity = '0'
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerdown', down)
     window.addEventListener('pointerup', up)
     window.addEventListener('blur', up)
+    document.documentElement.addEventListener('pointerleave', hideLabel)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerdown', down)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('blur', up)
+      document.documentElement.removeEventListener('pointerleave', hideLabel)
     }
   }, [room, player, sendCursor])
 
@@ -548,11 +612,15 @@ function App() {
     )
   }
 
-  const ownCursor = cursorStates[player.user_id]
-  const allCursors = Object.values(cursorStates).filter((cursor) => cursor.team === player.team && isOnline(cursor.userId))
+  const remoteCursors = Object.values(cursorStates).filter(
+    (cursor) => cursor.userId !== player.user_id && cursor.team === player.team && isOnline(cursor.userId),
+  )
+  const ownCursorStyle = ownCursorImages
+    ? ({ '--own-cursor': cursorCss(ownCursorImages.up), '--own-cursor-down': cursorCss(ownCursorImages.down) } as CSSProperties)
+    : undefined
 
   return (
-    <div className="app-shell game-shell">
+    <div ref={shellRef} className={`app-shell game-shell ${ownCursorImages ? 'own-cursor' : ''}`} style={ownCursorStyle}>
       <div className="top-stage">
         <div className="cam-side cam-side-left">
           <CameraSlot label="CAM 1" player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
@@ -607,12 +675,12 @@ function App() {
       </main>
 
       <div className="cursor-layer" aria-hidden="true">
-        {allCursors.map((cursor) => (
-          <RemoteCursor key={cursor.userId} cursor={cursor} isOwn={cursor.userId === userId} />
+        {remoteCursors.map((cursor) => (
+          <RemoteCursor key={cursor.userId} cursor={cursor} />
         ))}
-        {ownCursor && !allCursors.some((cursor) => cursor.userId === ownCursor.userId) && (
-          <RemoteCursor key="own-fallback" cursor={ownCursor} isOwn />
-        )}
+        <div ref={ownLabelRef} className={`own-cursor-label ${TEAM_COLORS[player.team]}`}>
+          {player.display_name}
+        </div>
       </div>
 
       <div className="mobile-room-chip">Sala {room.code}</div>
@@ -859,10 +927,10 @@ function CharacterCard({
   )
 }
 
-function RemoteCursor({ cursor, isOwn }: { cursor: CursorState; isOwn: boolean }) {
+function RemoteCursor({ cursor }: { cursor: CursorState }) {
   return (
     <div
-      className={`remote-cursor ${isOwn ? 'own' : ''} ${cursor.down ? 'down' : ''} ${TEAM_COLORS[cursor.team]}`}
+      className={`remote-cursor ${cursor.down ? 'down' : ''} ${TEAM_COLORS[cursor.team]}`}
       style={{ left: `${cursor.x * 100}vw`, top: `${cursor.y * 100}vh` }}
     >
       <img
