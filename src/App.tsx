@@ -34,7 +34,10 @@ function getSlotCursorFile(slot: Slot, down: boolean) {
 }
 
 function errorText(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
+  if (error instanceof Error) return error.message
+  // Los errores de Supabase (PostgrestError) son objetos planos con `message`, no instancias de Error.
+  if (error && typeof error === 'object' && 'message' in error) return String(error.message)
+  return String(error)
 }
 
 function loadJson<T>(url: string): Promise<T> {

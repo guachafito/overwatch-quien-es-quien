@@ -148,24 +148,24 @@ begin
   select id into target_id from public.rooms where code = upper(trim(p_code));
   if target_id is null then raise exception 'Sala no encontrada.'; end if;
 
-  select room_id into existing_room
-  from public.room_players
-  where room_id = target_id and user_id = uid
+  select rp.room_id into existing_room
+  from public.room_players rp
+  where rp.room_id = target_id and rp.user_id = uid
   limit 1;
 
   if existing_room is not null then
-    update public.room_players
+    update public.room_players rp
       set display_name = clean_name
-      where room_id = target_id and user_id = uid;
+      where rp.room_id = target_id and rp.user_id = uid;
     return query select target_id;
     return;
   end if;
 
-  perform 1 from public.room_players
-    where room_id = target_id and slot = p_slot
+  perform 1 from public.room_players rp
+    where rp.room_id = target_id and rp.slot = p_slot
     for update;
 
-  if exists (select 1 from public.room_players where room_id = target_id and slot = p_slot) then
+  if exists (select 1 from public.room_players rp where rp.room_id = target_id and rp.slot = p_slot) then
     raise exception 'Ese puesto ya está ocupado.';
   end if;
 
