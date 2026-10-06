@@ -67,7 +67,6 @@ function App() {
   const localCursorRef = useRef<CursorState | null>(null)
   const initializedRef = useRef(false)
 
-  const isGame = Boolean(room && player)
   const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
   const sortedPlayers = useMemo(
     () => [...players].sort((a, b) => a.slot - b.slot),
@@ -142,16 +141,17 @@ function App() {
 
   useEffect(() => {
     if (!room || !player || !supabase) return
+    const client = supabase
 
     let alive = true
-    const channel = supabase
+    const channel = client
       .channel(`room-db-${room.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'room_players', filter: `room_id=eq.${room.id}` },
         async () => {
           if (!alive) return
-          const updated = await getPlayers(supabase, room.id)
+          const updated = await getPlayers(client, room.id)
           if (alive) setPlayers(updated)
         },
       )
@@ -174,7 +174,7 @@ function App() {
       )
       .subscribe()
 
-    const cursorChannel = supabase
+    const cursorChannel = client
       .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: true } } })
       .on('broadcast', { event: 'cursor' }, ({ payload }) => {
         const cursor = payload as CursorState
@@ -191,8 +191,8 @@ function App() {
 
     return () => {
       alive = false
-      void supabase.removeChannel(channel)
-      void supabase.removeChannel(cursorChannel)
+      void client.removeChannel(channel)
+      void client.removeChannel(cursorChannel)
       cursorChannelRef.current = null
     }
     // The callback is intentionally kept stable through refs/state below.
@@ -246,7 +246,7 @@ function App() {
   )
 
   useEffect(() => {
-    if (!isGame) return
+    if (!room || !player) return
     const move = (event: PointerEvent) => {
       const state: CursorState = {
         userId: player.user_id,
@@ -283,7 +283,7 @@ function App() {
       window.removeEventListener('pointerup', up)
       window.removeEventListener('blur', up)
     }
-  }, [isGame, player, sendCursor])
+  }, [room, player, sendCursor])
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault()
@@ -381,7 +381,7 @@ function App() {
     return <SetupScreen />
   }
 
-  if (!isGame) {
+  if (!room || !player) {
     return (
       <LandingScreen
         characters={characters}
