@@ -126,6 +126,12 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 3500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  useEffect(() => {
     if (!userId || !supabase || initializedRef.current) return
     const codeFromUrl = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase()
     if (!codeFromUrl) return
@@ -407,7 +413,7 @@ function App() {
   }
 
   const ownCursor = cursorStates[player.user_id]
-  const allCursors = Object.values(cursorStates)
+  const allCursors = Object.values(cursorStates).filter((cursor) => cursor.team === player.team)
 
   return (
     <div className="app-shell game-shell">
@@ -446,8 +452,8 @@ function App() {
         </div>
       </header>
 
-      {notice && <div className="toast notice">{notice}</div>}
-      {error && <div className="toast error">{error}</div>}
+      {notice && <div className="toast notice in-game">{notice}</div>}
+      {error && <div className="toast error in-game">{error}</div>}
 
       <main className="board-wrap">
         <section className="board-grid" aria-label="Personajes">
