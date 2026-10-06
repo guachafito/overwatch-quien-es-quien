@@ -428,7 +428,6 @@ function App() {
 
       <header className={`game-toolbar ${TEAM_COLORS[player.team]}`}>
         <div>
-          <div className="eyebrow">OVERWATCH · ¿QUIÉN ES QUIÉN?</div>
           <h1>{TEAM_NAMES[player.team]}</h1>
           <div className="toolbar-meta">
             Sala <strong>{room.code}</strong> · {onlineCount}/4 jugadores · Tú: {player.display_name}
@@ -448,21 +447,6 @@ function App() {
       {error && <div className="toast error">{error}</div>}
 
       <main className="board-wrap">
-        <div className="board-head">
-          <div>
-            <h2>Tablero</h2>
-            <p>Las 24 cartas son idénticas para ambos equipos. Pulsa una carta para bajarla.</p>
-          </div>
-          <div className="team-roster">
-            <span className="roster-title">{TEAM_NAMES[player.team]}</span>
-            {sortedPlayers.filter((candidate) => candidate.team === player.team).map((candidate) => (
-              <span className="player-pill" key={candidate.user_id}>
-                {candidate.display_name}{candidate.user_id === player.user_id ? ' · tú' : ''}
-              </span>
-            ))}
-          </div>
-        </div>
-
         <section className="board-grid" aria-label="Personajes">
           {room.characters.map((character) => (
             <CharacterCard
