@@ -76,6 +76,24 @@ function playChatSound() {
   }
 }
 
+type SystemVariant = 'self' | 'join' | 'leave' | 'info'
+
+type ChatEntry =
+  | ({ kind: 'chat' } & ChatMessage)
+  | { kind: 'system'; id: string; variant: SystemVariant; text: string; created_at: string }
+
+type PresenceMeta = { user_id: string; display_name: string }
+
+function systemEntry(variant: SystemVariant, text: string): ChatEntry {
+  return { kind: 'system', id: `sys-${Date.now()}-${Math.random()}`, variant, text, created_at: new Date().toISOString() }
+}
+
+const timeFormat = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+
+function formatTime(iso: string) {
+  return timeFormat.format(new Date(iso))
+}
+
 function loadJson<T>(url: string): Promise<T> {
   return fetch(url, { cache: 'no-store' }).then(async (response) => {
     if (!response.ok) throw new Error(`No se pudo cargar ${url}`)
@@ -91,6 +109,8 @@ function App() {
   const [players, setPlayers] = useState<Player[]>([])
   const [board, setBoard] = useState<TeamBoard | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [systemEntries, setSystemEntries] = useState<ChatEntry[]>([])
+  const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set())
   const [chatMuted, setChatMuted] = useState(readChatMuted)
   const chatMutedRef = useRef(chatMuted)
   const [name, setName] = useState('')
@@ -231,15 +251,43 @@ function App() {
       )
       .subscribe()
 
+    setSystemEntries([systemEntry('self', 'Has entrado en la sala')])
+
+    // Presence marca quién está conectado de verdad: salir, cerrar la pestaña o perder la conexión lo quita.
+    let knownOnline = new Map<string, string>()
+    let firstSync = true
+
     const cursorChannel = client
-      .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: true } } })
+      .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: true }, presence: { key: player.user_id } } })
       .on('broadcast', { event: 'cursor' }, ({ payload }) => {
         const cursor = payload as CursorState
         if (!cursor?.userId) return
         setCursorStates((current) => ({ ...current, [cursor.userId]: cursor }))
       })
+      .on('presence', { event: 'sync' }, () => {
+        const state = cursorChannel.presenceState<PresenceMeta>()
+        const online = new Map<string, string>()
+        for (const [key, metas] of Object.entries(state)) online.set(key, metas[0]?.display_name ?? 'Jugador')
+
+        const entries: ChatEntry[] = []
+        for (const [id, displayName] of online) {
+          if (id === player.user_id || knownOnline.has(id)) continue
+          entries.push(firstSync
+            ? systemEntry('info', `${displayName} está en la sala`)
+            : systemEntry('join', `${displayName} ha entrado en la sala`))
+        }
+        for (const [id, displayName] of knownOnline) {
+          if (id !== player.user_id && !online.has(id)) entries.push(systemEntry('leave', `${displayName} ha salido de la sala`))
+        }
+
+        knownOnline = online
+        firstSync = false
+        setOnlineIds(new Set(online.keys()))
+        if (entries.length) setSystemEntries((current) => [...current, ...entries])
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
+          void cursorChannel.track({ user_id: player.user_id, display_name: player.display_name } satisfies PresenceMeta)
           sendCursor(cursorChannelRef.current ?? cursorChannel, false, true)
         }
       })
@@ -424,6 +472,8 @@ function App() {
     setPlayers([])
     setBoard(null)
     setMessages([])
+    setSystemEntries([])
+    setOnlineIds(new Set())
     setCursorStates({})
     setNotice('')
     const params = new URLSearchParams(window.location.search)
@@ -432,7 +482,15 @@ function App() {
   }
 
   const setupWarning = characters.length < 24
-  const onlineCount = players.length
+  const isOnline = (id: string) => id === player?.user_id || onlineIds.has(id)
+  const onlinePlayers = sortedPlayers.filter((candidate) => isOnline(candidate.user_id))
+  const onlineCount = onlinePlayers.length
+  const chatEntries = useMemo(
+    () =>
+      [...messages.map((message): ChatEntry => ({ kind: 'chat', ...message })), ...systemEntries]
+        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)),
+    [messages, systemEntries],
+  )
 
   if (!isSupabaseConfigured) {
     return <SetupScreen />
@@ -461,18 +519,18 @@ function App() {
   }
 
   const ownCursor = cursorStates[player.user_id]
-  const allCursors = Object.values(cursorStates).filter((cursor) => cursor.team === player.team)
+  const allCursors = Object.values(cursorStates).filter((cursor) => cursor.team === player.team && isOnline(cursor.userId))
 
   return (
     <div className="app-shell game-shell">
       <div className="top-stage">
         <div className="cam-side cam-side-left">
-          <CameraSlot label="CAM 1" player={sortedPlayers.find((candidate) => candidate.slot === 1)} />
-          <CameraSlot label="CAM 2" player={sortedPlayers.find((candidate) => candidate.slot === 2)} />
+          <CameraSlot label="CAM 1" player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
+          <CameraSlot label="CAM 2" player={onlinePlayers.find((candidate) => candidate.slot === 2)} />
         </div>
         <TeamChat
           team={player.team}
-          messages={messages}
+          entries={chatEntries}
           muted={chatMuted}
           onToggleMute={() => setChatMuted((current) => !current)}
           input={chatInput}
@@ -480,8 +538,8 @@ function App() {
           onSubmit={handleSendChat}
         />
         <div className="cam-side cam-side-right">
-          <CameraSlot label="CAM 3" player={sortedPlayers.find((candidate) => candidate.slot === 3)} />
-          <CameraSlot label="CAM 4" player={sortedPlayers.find((candidate) => candidate.slot === 4)} />
+          <CameraSlot label="CAM 3" player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
+          <CameraSlot label="CAM 4" player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
         </div>
       </div>
 
@@ -673,7 +731,7 @@ function CameraSlot({ label, player }: { label: string; player?: Player }) {
 
 function TeamChat({
   team,
-  messages,
+  entries,
   muted,
   onToggleMute,
   input,
@@ -681,7 +739,7 @@ function TeamChat({
   onSubmit,
 }: {
   team: Team
-  messages: ChatMessage[]
+  entries: ChatEntry[]
   muted: boolean
   onToggleMute: () => void
   input: string
@@ -689,11 +747,12 @@ function TeamChat({
   onSubmit: (event: FormEvent) => void
 }) {
   const messagesRef = useRef<HTMLDivElement>(null)
+  const hasChat = entries.some((entry) => entry.kind === 'chat')
 
   useEffect(() => {
     const list = messagesRef.current
     if (list) list.scrollTop = list.scrollHeight
-  }, [messages])
+  }, [entries])
 
   return (
     <section className={`team-chat ${TEAM_COLORS[team]}`}>
@@ -711,15 +770,22 @@ function TeamChat({
         </button>
       </div>
       <div className="chat-messages" ref={messagesRef}>
-        {messages.length === 0 ? (
-          <div className="chat-empty">Escribe algo. Solo lo verá tu equipo.</div>
-        ) : (
-          messages.map((message) => (
-            <div className="chat-message" key={message.id}>
-              <strong>{message.display_name}</strong>
-              <span>{message.body}</span>
+        {!hasChat && <div className="chat-empty">Escribe algo. Solo lo verá tu equipo.</div>}
+        {entries.map((entry) =>
+          entry.kind === 'chat' ? (
+            <div className="chat-message" key={entry.id}>
+              <div className="chat-message-head">
+                <strong>{entry.display_name}</strong>
+                <time dateTime={entry.created_at}>{formatTime(entry.created_at)}</time>
+              </div>
+              <span>{entry.body}</span>
             </div>
-          ))
+          ) : (
+            <div className={`chat-system ${entry.variant}`} key={entry.id}>
+              <span>{entry.text}</span>
+              <time dateTime={entry.created_at}>{formatTime(entry.created_at)}</time>
+            </div>
+          ),
         )}
       </div>
       <form onSubmit={onSubmit} className="chat-form">

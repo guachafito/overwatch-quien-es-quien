@@ -171,6 +171,21 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .chat-message { display: grid; gap: 2px; font-size: 11px; padding: 6px 7px; border-radius: 8px; background: rgba(255,255,255,.05); }
 .chat-message strong { font-size: 10px; color: #8dcfff; }
 .team-chat.red .chat-message strong { color: #ff9a9a; }
+.chat-message-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chat-message time, .chat-system time { flex: none; font-size: 9px; color: #6e8799; font-variant-numeric: tabular-nums; }
+
+/* Avisos de sala: una línea, sin caja, con el color según el tipo. */
+.chat-system { display: flex; align-items: baseline; gap: 6px; padding: 1px 2px; font-size: 10px; font-style: italic; }
+.chat-system span { flex: 1; min-width: 0; }
+.chat-system span::before { font-style: normal; font-weight: 900; margin-right: 5px; }
+.chat-system.self { color: #7fd0ff; }
+.chat-system.self span::before { content: '★'; }
+.chat-system.join { color: #6ee59a; }
+.chat-system.join span::before { content: '→'; }
+.chat-system.leave { color: #ff8f73; }
+.chat-system.leave span::before { content: '←'; }
+.chat-system.info { color: #9fb3c4; }
+.chat-system.info span::before { content: '•'; }
 .chat-form { display: grid; grid-template-columns: 1fr auto; gap: 5px; padding: 8px; border-top: 1px solid rgba(255,255,255,.08); }
 .chat-form input { min-width: 0; padding: 8px 9px; border-radius: 8px; font-size: 11px; }
 .chat-form button { width: 31px; border-radius: 8px; background: rgba(255,255,255,.1); color: #fff; font-weight: 900; }
