@@ -680,7 +680,7 @@ function CharacterCard({
     <button className={`character-card ${isDown ? 'is-down' : ''}`} onClick={() => onToggle(character)} aria-pressed={isDown}>
       <div className="character-face">
         <div className="portrait-frame">
-          <img src={`/characters/${encodeURIComponent(character)}.png`} alt={character} loading="lazy" />
+          <img src={`${import.meta.env.BASE_URL}characters/${encodeURIComponent(character)}.png`} alt={character} loading="lazy" />
           <span className="role-dot" />
         </div>
         <div className="character-name">{character}</div>
