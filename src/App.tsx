@@ -40,6 +40,42 @@ function errorText(error: unknown) {
   return String(error)
 }
 
+const CHAT_MUTED_KEY = 'oqeq-chat-muted'
+
+function readChatMuted() {
+  try {
+    return window.localStorage.getItem(CHAT_MUTED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+let audioContext: AudioContext | null = null
+
+// "Ding" corto de dos notas generado con Web Audio, sin archivos de sonido.
+function playChatSound() {
+  try {
+    audioContext ??= new AudioContext()
+    const ctx = audioContext
+    if (ctx.state === 'suspended') void ctx.resume()
+    const start = ctx.currentTime
+    for (const [offset, frequency] of [[0, 880], [0.09, 1320]] as const) {
+      const oscillator = ctx.createOscillator()
+      const gain = ctx.createGain()
+      oscillator.type = 'sine'
+      oscillator.frequency.value = frequency
+      gain.gain.setValueAtTime(0.0001, start + offset)
+      gain.gain.exponentialRampToValueAtTime(0.18, start + offset + 0.01)
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.22)
+      oscillator.connect(gain).connect(ctx.destination)
+      oscillator.start(start + offset)
+      oscillator.stop(start + offset + 0.24)
+    }
+  } catch {
+    // Sin soporte de audio: se ignora.
+  }
+}
+
 function loadJson<T>(url: string): Promise<T> {
   return fetch(url, { cache: 'no-store' }).then(async (response) => {
     if (!response.ok) throw new Error(`No se pudo cargar ${url}`)
@@ -55,6 +91,8 @@ function App() {
   const [players, setPlayers] = useState<Player[]>([])
   const [board, setBoard] = useState<TeamBoard | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatMuted, setChatMuted] = useState(readChatMuted)
+  const chatMutedRef = useRef(chatMuted)
   const [name, setName] = useState('')
   const [joinCode, setJoinCode] = useState(new URLSearchParams(window.location.search).get('room') ?? '')
   const [joinTeam, setJoinTeam] = useState<Team>(2)
@@ -126,6 +164,15 @@ function App() {
   }, [])
 
   useEffect(() => {
+    chatMutedRef.current = chatMuted
+    try {
+      window.localStorage.setItem(CHAT_MUTED_KEY, chatMuted ? '1' : '0')
+    } catch {
+      // Almacenamiento no disponible: la preferencia solo dura esta sesión.
+    }
+  }, [chatMuted])
+
+  useEffect(() => {
     if (!notice) return
     const timer = window.setTimeout(() => setNotice(''), 3500)
     return () => window.clearTimeout(timer)
@@ -179,6 +226,7 @@ function App() {
           const incoming = payload.new as ChatMessage
           if (incoming.team !== player.team) return
           setMessages((current) => (current.some((message) => message.id === incoming.id) ? current : [...current, incoming]))
+          if (incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
         },
       )
       .subscribe()
@@ -425,6 +473,8 @@ function App() {
         <TeamChat
           team={player.team}
           messages={messages}
+          muted={chatMuted}
+          onToggleMute={() => setChatMuted((current) => !current)}
           input={chatInput}
           setInput={setChatInput}
           onSubmit={handleSendChat}
@@ -624,23 +674,43 @@ function CameraSlot({ label, player }: { label: string; player?: Player }) {
 function TeamChat({
   team,
   messages,
+  muted,
+  onToggleMute,
   input,
   setInput,
   onSubmit,
 }: {
   team: Team
   messages: ChatMessage[]
+  muted: boolean
+  onToggleMute: () => void
   input: string
   setInput: (value: string) => void
   onSubmit: (event: FormEvent) => void
 }) {
+  const messagesRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const list = messagesRef.current
+    if (list) list.scrollTop = list.scrollHeight
+  }, [messages])
+
   return (
     <section className={`team-chat ${TEAM_COLORS[team]}`}>
       <div className="chat-header">
         <span>CHAT · {TEAM_NAMES[team]}</span>
-        <span className="live-dot">●</span>
+        <button
+          type="button"
+          className="mute-button"
+          onClick={onToggleMute}
+          aria-pressed={muted}
+          aria-label={muted ? 'Activar sonido del chat' : 'Silenciar chat'}
+          title={muted ? 'Activar sonido del chat' : 'Silenciar chat'}
+        >
+          {muted ? '🔕' : '🔔'}
+        </button>
       </div>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 ? (
           <div className="chat-empty">Escribe algo. Solo lo verá tu equipo.</div>
         ) : (

@@ -163,8 +163,10 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .chat-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; font-size: 10px; font-weight: 900; letter-spacing: .08em; border-bottom: 1px solid rgba(255,255,255,.08); }
 .team-chat.blue .chat-header { background: #0e4b8c; }
 .team-chat.red .chat-header { background: #8c2424; }
-.live-dot { font-size: 12px; }
-.chat-messages { overflow: auto; padding: 9px 10px; display: grid; gap: 7px; align-content: start; }
+.mute-button { padding: 2px 6px; border-radius: 6px; background: rgba(0,0,0,.2); font-size: 13px; line-height: 1.2; cursor: pointer; }
+.mute-button:hover { background: rgba(0,0,0,.35); }
+.mute-button[aria-pressed="true"] { opacity: .7; }
+.chat-messages { min-height: 0; overflow: auto; padding: 9px 10px; display: grid; gap: 7px; align-content: start; }
 .chat-empty { color: #6e8799; font-size: 11px; line-height: 1.35; }
 .chat-message { display: grid; gap: 2px; font-size: 11px; padding: 6px 7px; border-radius: 8px; background: rgba(255,255,255,.05); }
 .chat-message strong { font-size: 10px; color: #8dcfff; }
