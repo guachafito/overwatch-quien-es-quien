@@ -11,6 +11,7 @@ import {
   joinTeam,
   leaveRoom as leaveRoomRpc,
   resetTeamBoard,
+  spectateTeam,
   toggleCard,
 } from './game'
 import type { RoomOccupant } from './game'
@@ -19,6 +20,16 @@ import type { ChatMessage, CursorState, Player, Room, Slot, Team, TeamBoard } fr
 const TEAM_NAMES: Record<Team, string> = { 1: 'Equipo Azul', 2: 'Equipo Rojo' }
 const TEAM_COLORS: Record<Team, string> = { 1: 'blue', 2: 'red' }
 const SLOTS: Slot[] = [1, 2, 3, 4]
+
+// Vista OBS (?obs=<clave del equipo>): espectador de solo lectura, sin puesto, presencia ni cursor propio.
+const OBS_KEY = new URLSearchParams(window.location.search).get('obs')?.trim() ?? ''
+const SPECTATING = Boolean(OBS_KEY)
+// Fondo de página transparente para que OBS muestre las cámaras por detrás (ver .obs-mode en styles.css).
+if (SPECTATING) document.documentElement.classList.add('obs-mode')
+
+function obsLink(key: string) {
+  return `${window.location.origin}${window.location.pathname}?obs=${encodeURIComponent(key)}`
+}
 const CURSOR_ANCHORS: Record<Slot, { x: number; y: number }> = {
   1: { x: 0.12, y: 0.34 },
   2: { x: 0.18, y: 0.62 },
@@ -183,7 +194,7 @@ function App() {
   const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
   const shellRef = useRef<HTMLDivElement>(null)
   const ownLabelRef = useRef<HTMLDivElement>(null)
-  const ownCursorImages = useScaledCursors(player?.slot)
+  const ownCursorImages = useScaledCursors(SPECTATING ? undefined : player?.slot)
 
   const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
   const sortedPlayers = useMemo(
@@ -256,7 +267,34 @@ function App() {
   }, [notice])
 
   useEffect(() => {
-    if (!userId || !supabase || initializedRef.current) return
+    if (!SPECTATING || !userId || !supabase || initializedRef.current) return
+    initializedRef.current = true
+    const client = supabase
+
+    ;(async () => {
+      try {
+        const { room: watchedRoom, team } = await spectateTeam(client, OBS_KEY)
+        // El espectador reutiliza la vista de juego con un jugador ficticio que no está en room_players,
+        // así que no aparece en las cámaras ni en el contador de jugadores.
+        const viewer: Player = {
+          room_id: watchedRoom.id,
+          user_id: userId,
+          team,
+          slot: team === 1 ? 1 : 3,
+          display_name: 'OBS',
+          joined_at: new Date().toISOString(),
+        }
+        setRoom(watchedRoom)
+        setPlayer(viewer)
+        await refreshRoomData(watchedRoom, viewer)
+      } catch (caught) {
+        setError(errorText(caught))
+      }
+    })()
+  }, [refreshRoomData, userId])
+
+  useEffect(() => {
+    if (SPECTATING || !userId || !supabase || initializedRef.current) return
     const codeFromUrl = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase()
     if (!codeFromUrl) return
     initializedRef.current = true
@@ -303,12 +341,12 @@ function App() {
           const incoming = payload.new as ChatMessage
           if (incoming.team !== player.team) return
           setMessages((current) => (current.some((message) => message.id === incoming.id) ? current : [...current, incoming]))
-          if (incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
+          if (!SPECTATING && incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
         },
       )
       .subscribe()
 
-    setSystemEntries([systemEntry('self', 'Has entrado en la sala')])
+    setSystemEntries(SPECTATING ? [] : [systemEntry('self', 'Has entrado en la sala')])
 
     // Presence marca quién está conectado de verdad: salir, cerrar la pestaña o perder la conexión lo quita.
     let knownOnline = new Map<string, string>()
@@ -343,7 +381,8 @@ function App() {
         if (entries.length) setSystemEntries((current) => [...current, ...entries])
       })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
+        // El espectador solo escucha: sin track no cuenta como conectado ni envía cursor.
+        if (status === 'SUBSCRIBED' && !SPECTATING) {
           void cursorChannel.track({ user_id: player.user_id, display_name: player.display_name } satisfies PresenceMeta)
           sendCursor(cursorChannelRef.current ?? cursorChannel, false, true)
         }
@@ -407,7 +446,7 @@ function App() {
   )
 
   useEffect(() => {
-    if (!room || !player) return
+    if (!room || !player || SPECTATING) return
     const move = (event: PointerEvent) => {
       const state: CursorState = {
         userId: player.user_id,
@@ -518,7 +557,7 @@ function App() {
   }
 
   async function handleFlip(character: string) {
-    if (!supabase || !room || !player) return
+    if (!supabase || !room || !player || SPECTATING) return
     setError('')
     try {
       const updated = await toggleCard(supabase, room.id, player.team, character)
@@ -529,7 +568,7 @@ function App() {
   }
 
   async function handleReset() {
-    if (!supabase || !room || !player) return
+    if (!supabase || !room || !player || SPECTATING) return
     setBusy(true)
     try {
       const updated = await resetTeamBoard(supabase, room.id, player.team)
@@ -544,7 +583,7 @@ function App() {
   async function handleSendChat(event: FormEvent) {
     event.preventDefault()
     const body = chatInput.trim()
-    if (!supabase || !room || !player || !body) return
+    if (!supabase || !room || !player || SPECTATING || !body) return
     setChatInput('')
     const { error: insertError } = await supabase.from('messages').insert({
       room_id: room.id,
@@ -554,6 +593,17 @@ function App() {
       body: body.slice(0, 280),
     })
     if (insertError) setError(errorText(insertError))
+  }
+
+  async function handleCopyObsLink() {
+    if (!board?.spectator_key) return setError('El enlace OBS aún no está disponible. Revisa que la migración esté aplicada.')
+    const link = obsLink(board.spectator_key)
+    try {
+      await navigator.clipboard.writeText(link)
+      setNotice('Enlace OBS copiado. Pégalo como URL de una fuente de navegador.')
+    } catch {
+      window.prompt('Copia el enlace OBS:', link)
+    }
   }
 
   function leaveRoom() {
@@ -592,6 +642,10 @@ function App() {
     return <SetupScreen />
   }
 
+  if (SPECTATING && (!room || !player)) {
+    return <div className="obs-status">{error || 'Conectando vista OBS…'}</div>
+  }
+
   if (!room || !player) {
     return (
       <LandingScreen
@@ -622,7 +676,7 @@ function App() {
   return (
     <div
       ref={shellRef}
-      className={`app-shell game-shell ${TEAM_COLORS[player.team]} ${ownCursorImages ? 'own-cursor' : ''}`}
+      className={`app-shell game-shell ${TEAM_COLORS[player.team]} ${ownCursorImages ? 'own-cursor' : ''} ${SPECTATING ? 'obs-view' : ''}`}
       style={ownCursorStyle}
     >
       {/* El equipo rojo ve la misma distribución en espejo (ver .game-shell.red en styles.css). */}
@@ -630,12 +684,16 @@ function App() {
         <header className={`game-toolbar ${TEAM_COLORS[player.team]}`}>
           <h1>{TEAM_NAMES[player.team]}</h1>
           <div className="toolbar-meta">
-            Sala <strong>{room.code}</strong> · {onlineCount}/4 jugadores · Tú: {player.display_name}
+            Sala <strong>{room.code}</strong> · {onlineCount}/4 jugadores
+            {!SPECTATING && <> · Tú: {player.display_name}</>}
           </div>
         </header>
         <div className={`toolbar-actions ${TEAM_COLORS[player.team]}`}>
           <button className="ghost-button" onClick={handleReset} disabled={busy}>
             Reiniciar mis fichas
+          </button>
+          <button className="ghost-button" onClick={handleCopyObsLink} title="Copia el enlace de la vista OBS de tu equipo">
+            Enlace OBS
           </button>
           <button className="danger-button" onClick={leaveRoom}>
             Salir

@@ -23,6 +23,7 @@ export type TeamBoard = {
   room_id: string
   team: Team
   flipped: string[]
+  spectator_key?: string
   updated_at: string
 }
 

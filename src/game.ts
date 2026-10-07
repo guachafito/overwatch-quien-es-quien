@@ -141,3 +141,14 @@ export async function resetTeamBoard(supabase: SupabaseClient, roomId: string, t
   if (error) throw error
   return (data?.[0] as TeamBoard | undefined) ?? null
 }
+
+// Entra como espectador del equipo dueño de la clave (vista OBS): no ocupa puesto ni puede modificar nada.
+export async function spectateTeam(supabase: SupabaseClient, key: string) {
+  const { data, error } = await supabase.rpc('spectate_team', { p_key: key })
+  if (error) throw error
+  const row = data?.[0] as { room_id: string; team: Team } | undefined
+  if (!row) throw new Error('Enlace de espectador no válido.')
+  const room = await getRoomById(supabase, row.room_id)
+  if (!room) throw new Error('Sala no encontrada.')
+  return { room, team: row.team }
+}
