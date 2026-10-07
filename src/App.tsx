@@ -920,17 +920,21 @@ function CharacterCard({
   isDown: boolean
   onToggle: (character: string) => void
 }) {
+  // La longitud del nombre reduce el tamaño de letra para que quepa en una sola línea (ficha y etiqueta de bajada).
   return (
-    <button className={`character-card ${isDown ? 'is-down' : ''}`} onClick={() => onToggle(character)} aria-pressed={isDown}>
+    <button
+      className={`character-card ${isDown ? 'is-down' : ''}`}
+      onClick={() => onToggle(character)}
+      aria-pressed={isDown}
+      data-name={character}
+      style={{ '--name-len': Math.max(character.length, 5) } as CSSProperties}
+    >
       <div className="character-face">
         <div className="card-frame">
           <div className="portrait-frame">
             <img src={`${import.meta.env.BASE_URL}characters/${encodeURIComponent(character)}.png`} alt={character} loading="lazy" />
           </div>
-          {/* La longitud del nombre reduce el tamaño de letra para que quepa en una sola línea. */}
-          <div className="character-name" style={{ '--name-len': Math.max(character.length, 5) } as CSSProperties}>
-            {character}
-          </div>
+          <div className="character-name">{character}</div>
         </div>
       </div>
     </button>

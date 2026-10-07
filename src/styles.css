@@ -297,7 +297,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   background: #ff0000;
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
 }
-.character-card.is-down .character-face { transform: translateY(66%); }
+.character-card.is-down .character-face { transform: translateY(80%); }
 .card-frame {
   position: absolute; top: 4.5%; left: 4%; right: 8%; bottom: 4%;
   border: 1.7cqw solid rgb(215 0 0);
@@ -318,7 +318,11 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   paint-order: stroke fill;
   text-shadow: 0 .04em 0 #000;
 }
-.character-card.is-down::before { content: 'DESCARTADO'; position: absolute; z-index: 1; left: 8cqw; top: 8cqw; font-size: 7cqw; font-weight: 950; letter-spacing: .14em; color: rgba(201,231,252,.5); }
+.character-card.is-down::before {
+  content: attr(data-name); position: absolute; z-index: 1; left: 6cqw; right: 6cqw; top: 7cqw;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; text-transform: uppercase;
+  font-size: min(9cqw, calc(80cqw / var(--name-len, 5))); font-weight: 950; letter-spacing: .1em; color: rgba(201,231,252,.6);
+}
 
 .cursor-layer { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
 .remote-cursor { position: fixed; width: 1px; height: 1px; transform: translate(-4px, -4px); transition: left .05s linear, top .05s linear; }
