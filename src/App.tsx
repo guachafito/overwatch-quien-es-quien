@@ -642,8 +642,8 @@ function App() {
           </button>
         </div>
         <div className="side-cams">
-          <CameraSlot label="CAM 1" player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
-          <CameraSlot label="CAM 2" player={onlinePlayers.find((candidate) => candidate.slot === 2)} />
+          <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
+          <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 2)} />
         </div>
       </aside>
 
@@ -659,8 +659,8 @@ function App() {
             onSubmit={handleSendChat}
           />
           <div className="top-cams">
-            <CameraSlot label="CAM 3" player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
-            <CameraSlot label="CAM 4" player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
+            <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
+            <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
           </div>
         </div>
 
@@ -835,10 +835,9 @@ function SetupScreen() {
   )
 }
 
-function CameraSlot({ label, player }: { label: string; player?: Player }) {
+function CameraSlot({ player }: { player?: Player }) {
   return (
     <div className="camera-slot">
-      <div className="camera-label">{label}</div>
       <div className="camera-placeholder">{player ? player.display_name : 'ESPERANDO JUGADOR'}</div>
     </div>
   )
@@ -911,6 +910,16 @@ function TeamChat({
   )
 }
 
+// Fondos del retrato: verdes, azules, morados y amarillos claros.
+const PORTRAIT_COLORS = ['#2f8f5b', '#1f5f9e', '#6a3fa0', '#f2df8a', '#4fae7a', '#2a7bbf', '#8a5cc7', '#e8cf6a']
+
+// El color depende solo del nombre, así un personaje tiene el mismo fondo en todas las salas y equipos.
+function portraitColor(character: string) {
+  let hash = 0
+  for (const char of character) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return PORTRAIT_COLORS[hash % PORTRAIT_COLORS.length]
+}
+
 function CharacterCard({
   character,
   isDown,
@@ -927,7 +936,7 @@ function CharacterCard({
       onClick={() => onToggle(character)}
       aria-pressed={isDown}
       data-name={character}
-      style={{ '--name-len': Math.max(character.length, 5) } as CSSProperties}
+      style={{ '--name-len': Math.max(character.length, 5), '--portrait-bg': portraitColor(character) } as CSSProperties}
     >
       <div className="character-face">
         <div className="card-frame">
