@@ -275,7 +275,8 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 /*
  * Ficha: marco rojo redondeado > marco degradado naranja-amarillo > retrato sobre fondo azul,
  * con el nombre en blanco y contorno negro solapando el borde inferior del retrato.
- * Las medidas van en cqw (ancho de la ficha) para que todo escale con ella.
+ * Las medidas interiores van en cqw (ancho de la ficha) para que todo escale con ella. El radio
+ * de la propia ficha va en % porque sus cqw se resolverían contra el tablero, no contra ella.
  */
 .character-card {
   position: relative;
@@ -284,7 +285,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   padding: 0;
   overflow: hidden;
   container-type: inline-size;
-  border-radius: 4.5cqw;
+  border-radius: 4.5% / 4%;
   background: #0a2037;
   box-shadow: 0 8px 20px rgba(0,0,0,.25);
   text-align: left;
@@ -292,7 +293,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .character-card:hover { box-shadow: 0 12px 26px rgba(0,0,0,.4); }
 .character-face {
   position: absolute; inset: 0;
-  border-radius: 4.5cqw;
+  border-radius: 4.5% / 4%;
   background: #ff0000;
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
 }
