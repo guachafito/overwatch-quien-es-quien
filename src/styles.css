@@ -296,7 +296,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 }
 .character-card.is-down .character-face { transform: translateY(80%); }
 .card-frame {
-  position: absolute; top: 4.5%; left: 4%; right: 8%; bottom: 4%;
+  position: absolute; top: 4.5%; left: 4%; right: 4%; bottom: 8%;
   border: 1.7cqw solid rgb(215 0 0);
   background: linear-gradient(180deg, #ff6a00 0%, #ffd200 100%);
 }
