@@ -620,35 +620,20 @@ function App() {
     : undefined
 
   return (
-    <div ref={shellRef} className={`app-shell game-shell ${ownCursorImages ? 'own-cursor' : ''}`} style={ownCursorStyle}>
-      <div className="top-stage">
-        <div className="cam-side cam-side-left">
-          <CameraSlot label="CAM 1" player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
-          <CameraSlot label="CAM 2" player={onlinePlayers.find((candidate) => candidate.slot === 2)} />
-        </div>
-        <TeamChat
-          team={player.team}
-          entries={chatEntries}
-          muted={chatMuted}
-          onToggleMute={() => setChatMuted((current) => !current)}
-          input={chatInput}
-          setInput={setChatInput}
-          onSubmit={handleSendChat}
-        />
-        <div className="cam-side cam-side-right">
-          <CameraSlot label="CAM 3" player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
-          <CameraSlot label="CAM 4" player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
-        </div>
-      </div>
-
-      <header className={`game-toolbar ${TEAM_COLORS[player.team]}`}>
-        <div>
+    <div
+      ref={shellRef}
+      className={`app-shell game-shell ${TEAM_COLORS[player.team]} ${ownCursorImages ? 'own-cursor' : ''}`}
+      style={ownCursorStyle}
+    >
+      {/* El equipo rojo ve la misma distribución en espejo (ver .game-shell.red en styles.css). */}
+      <aside className="side-column">
+        <header className={`game-toolbar ${TEAM_COLORS[player.team]}`}>
           <h1>{TEAM_NAMES[player.team]}</h1>
           <div className="toolbar-meta">
             Sala <strong>{room.code}</strong> · {onlineCount}/4 jugadores · Tú: {player.display_name}
           </div>
-        </div>
-        <div className="toolbar-actions">
+        </header>
+        <div className={`toolbar-actions ${TEAM_COLORS[player.team]}`}>
           <button className="ghost-button" onClick={handleReset} disabled={busy}>
             Reiniciar mis fichas
           </button>
@@ -656,23 +641,45 @@ function App() {
             Salir
           </button>
         </div>
-      </header>
+        <div className="side-cams">
+          <CameraSlot label="CAM 1" player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
+          <CameraSlot label="CAM 2" player={onlinePlayers.find((candidate) => candidate.slot === 2)} />
+        </div>
+      </aside>
+
+      <div className="main-column">
+        <div className="top-stage">
+          <TeamChat
+            team={player.team}
+            entries={chatEntries}
+            muted={chatMuted}
+            onToggleMute={() => setChatMuted((current) => !current)}
+            input={chatInput}
+            setInput={setChatInput}
+            onSubmit={handleSendChat}
+          />
+          <div className="top-cams">
+            <CameraSlot label="CAM 3" player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
+            <CameraSlot label="CAM 4" player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
+          </div>
+        </div>
+
+        <main className="board-wrap">
+          <section className="board-grid" aria-label="Personajes">
+            {room.characters.map((character) => (
+              <CharacterCard
+                key={character}
+                character={character}
+                isDown={flipped.has(character)}
+                onToggle={handleFlip}
+              />
+            ))}
+          </section>
+        </main>
+      </div>
 
       {notice && <div className="toast notice in-game">{notice}</div>}
       {error && <div className="toast error in-game">{error}</div>}
-
-      <main className="board-wrap">
-        <section className="board-grid" aria-label="Personajes">
-          {room.characters.map((character) => (
-            <CharacterCard
-              key={character}
-              character={character}
-              isDown={flipped.has(character)}
-              onToggle={handleFlip}
-            />
-          ))}
-        </section>
-      </main>
 
       <div className="cursor-layer" aria-hidden="true">
         {remoteCursors.map((cursor) => (
@@ -916,12 +923,15 @@ function CharacterCard({
   return (
     <button className={`character-card ${isDown ? 'is-down' : ''}`} onClick={() => onToggle(character)} aria-pressed={isDown}>
       <div className="character-face">
-        <div className="portrait-frame">
-          <img src={`${import.meta.env.BASE_URL}characters/${encodeURIComponent(character)}.png`} alt={character} loading="lazy" />
-          <span className="role-dot" />
+        <div className="card-frame">
+          <div className="portrait-frame">
+            <img src={`${import.meta.env.BASE_URL}characters/${encodeURIComponent(character)}.png`} alt={character} loading="lazy" />
+          </div>
+          {/* La longitud del nombre reduce el tamaño de letra para que quepa en una sola línea. */}
+          <div className="character-name" style={{ '--name-len': Math.max(character.length, 5) } as CSSProperties}>
+            {character}
+          </div>
         </div>
-        <div className="character-name">{character}</div>
-        <div className="fold-marker">▾</div>
       </div>
     </button>
   )
