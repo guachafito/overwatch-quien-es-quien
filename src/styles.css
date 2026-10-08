@@ -291,6 +291,8 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .character-face {
   position: absolute; inset: 0;
   border-radius: 4.5% / 4%;
+  border-right: 2.7cqw solid rgb(187 80 80);
+  border-top: 2.7cqw solid rgb(235 86 86);
   background: #ff0000;
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
 }
