@@ -152,3 +152,12 @@ export async function spectateTeam(supabase: SupabaseClient, key: string) {
   if (!room) throw new Error('Sala no encontrada.')
   return { room, team: row.team }
 }
+
+// Fichas bajadas por equipo (solo el número, no cuáles), para el mini-tablero del rival.
+export async function getBoardDownCounts(supabase: SupabaseClient, roomId: string) {
+  const { data, error } = await supabase.rpc('board_down_counts', { p_room_id: roomId })
+  if (error) throw error
+  const counts: Record<Team, number> = { 1: 0, 2: 0 }
+  for (const row of (data ?? []) as { team: Team; down: number }[]) counts[row.team] = row.down
+  return counts
+}

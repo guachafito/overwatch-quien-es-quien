@@ -162,7 +162,8 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .main-column { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--gap); }
 .top-stage { flex: none; height: var(--top-h); display: flex; gap: var(--gap); }
 .game-shell.red .top-stage { flex-direction: row-reverse; }
-.top-stage .team-chat { flex: 1; }
+/* El chat y el mini-tablero del rival se reparten a partes iguales el hueco que dejan las cámaras. */
+.top-stage .team-chat, .top-stage .opponent-board { flex: 1 1 0; }
 .top-cams { flex: none; height: 100%; display: flex; gap: var(--gap); }
 
 .camera-slot {
@@ -214,6 +215,28 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .chat-form { display: grid; grid-template-columns: 1fr auto; gap: 5px; padding: 8px; border-top: 1px solid rgba(255,255,255,.08); }
 .chat-form input { min-width: 0; padding: 8px 9px; border-radius: 8px; font-size: 11px; }
 .chat-form button { width: 31px; border-radius: 8px; background: rgba(255,255,255,.1); color: #fff; font-weight: 900; }
+
+/*
+ * Mini-tablero del rival: 8×3 fichas rojas en 8:9, centradas y limitadas por la altura disponible.
+ * Solo refleja cuántas fichas tiene bajadas el otro equipo, en posiciones aleatorias.
+ */
+.opponent-board { min-width: 0; height: 100%; container-type: size; display: grid; place-items: center; }
+.opponent-grid {
+  --mini-gap: 4px;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: var(--mini-gap);
+  width: min(100cqw, calc((100cqh - 2 * var(--mini-gap)) / 3 * 8 / 9 * 8 + 7 * var(--mini-gap)));
+}
+.mini-card { position: relative; aspect-ratio: 8 / 9; overflow: hidden; border-radius: 4.5% / 4%; background: #0a2037; box-shadow: 0 4px 10px rgba(0,0,0,.25); }
+.mini-face {
+  position: absolute; inset: 0;
+  border-radius: 4.5% / 4%;
+  background: #ff0000;
+  box-shadow: inset 0 0 0 2px rgb(215 0 0);
+  transition: transform .28s cubic-bezier(.2,.85,.2,1);
+}
+.mini-card.is-down .mini-face { transform: translateY(80%); }
 
 .game-toolbar {
   flex: none;
@@ -294,6 +317,9 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   background: #ff0000;
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
 }
+/* Borde lateral: a la derecha en el equipo azul y a la izquierda en el rojo (vista en espejo). */
+.game-shell.blue .character-face { border-right: 2.7cqw solid rgb(187 80 80); }
+.game-shell.red .character-face { border-left: 2.7cqw solid rgb(187 80 80); }
 .character-card.is-down .character-face { transform: translateY(80%); }
 .card-frame {
   position: absolute; top: 4.5%; left: 4%; right: 4%; bottom: 8%;
@@ -376,6 +402,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   .side-cams .camera-slot { width: auto; height: 100%; }
   .top-stage, .game-shell.red .top-stage { height: auto; flex-direction: column; }
   .top-stage .team-chat { flex: none; height: 190px; }
+  .top-stage .opponent-board { flex: none; height: 120px; }
   .top-cams { height: 150px; }
   .board-wrap { container-type: normal; flex: none; margin-bottom: 40px; }
   .board-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: none; width: 100%; height: auto; }

@@ -3,6 +3,7 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 import { ensureAnonymousSession, isSupabaseConfigured, supabase } from './supabase'
 import {
   createRoom,
+  getBoardDownCounts,
   getPlayers,
   getRoomByCode,
   getTeamBoard,
@@ -11,6 +12,7 @@ import {
   joinTeam,
   leaveRoom as leaveRoomRpc,
   resetTeamBoard,
+  shuffle,
   spectateTeam,
   toggleCard,
 } from './game'
@@ -148,6 +150,12 @@ type ChatEntry =
 
 type PresenceMeta = { user_id: string; display_name: string }
 
+type BoardCount = { team: Team; down: number }
+
+function sendBoardCount(channel: RealtimeChannel | null, team: Team, down: number) {
+  void channel?.send({ type: 'broadcast', event: 'board-count', payload: { team, down } satisfies BoardCount })
+}
+
 function systemEntry(variant: SystemVariant, text: string): ChatEntry {
   return { kind: 'system', id: `sys-${Date.now()}-${Math.random()}`, variant, text, created_at: new Date().toISOString() }
 }
@@ -172,6 +180,9 @@ function App() {
   const [player, setPlayer] = useState<Player | null>(null)
   const [players, setPlayers] = useState<Player[]>([])
   const [board, setBoard] = useState<TeamBoard | null>(null)
+  // Fichas bajadas por el equipo rival: solo el número, nunca cuáles.
+  const [opponentDown, setOpponentDown] = useState(0)
+  const ownDownRef = useRef(0)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [systemEntries, setSystemEntries] = useState<ChatEntry[]>([])
   const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set())
@@ -197,6 +208,7 @@ function App() {
   const ownCursorImages = useScaledCursors(SPECTATING ? undefined : player?.slot)
 
   const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
+  ownDownRef.current = flipped.size
   const sortedPlayers = useMemo(
     () => [...players].sort((a, b) => a.slot - b.slot),
     [players],
@@ -359,6 +371,11 @@ function App() {
         if (!cursor?.userId || cursor.userId === player.user_id) return
         setCursorStates((current) => ({ ...current, [cursor.userId]: cursor }))
       })
+      // Cada jugador anuncia cuántas fichas tiene bajadas su equipo; el rival lo pinta en su mini-tablero.
+      .on('broadcast', { event: 'board-count' }, ({ payload }) => {
+        const count = payload as BoardCount
+        if (count?.team && count.team !== player.team) setOpponentDown(count.down)
+      })
       .on('presence', { event: 'sync' }, () => {
         const state = cursorChannel.presenceState<PresenceMeta>()
         const online = new Map<string, string>()
@@ -381,11 +398,20 @@ function App() {
         if (entries.length) setSystemEntries((current) => [...current, ...entries])
       })
       .subscribe((status) => {
+        if (status !== 'SUBSCRIBED') return
+        // El recuento inicial del rival se lee de la base de datos; los cambios llegan por broadcast.
+        getBoardDownCounts(client, room.id)
+          .then((counts) => {
+            if (alive) setOpponentDown(counts[player.team === 1 ? 2 : 1])
+          })
+          .catch(() => {
+            // Sin la migración aplicada el mini-tablero se queda con todas las fichas subidas.
+          })
         // El espectador solo escucha: sin track no cuenta como conectado ni envía cursor.
-        if (status === 'SUBSCRIBED' && !SPECTATING) {
-          void cursorChannel.track({ user_id: player.user_id, display_name: player.display_name } satisfies PresenceMeta)
-          sendCursor(cursorChannelRef.current ?? cursorChannel, false, true)
-        }
+        if (SPECTATING) return
+        void cursorChannel.track({ user_id: player.user_id, display_name: player.display_name } satisfies PresenceMeta)
+        sendCursor(cursorChannelRef.current ?? cursorChannel, false, true)
+        sendBoardCount(cursorChannel, player.team, ownDownRef.current)
       })
 
     cursorChannelRef.current = cursorChannel
@@ -395,6 +421,7 @@ function App() {
       void client.removeChannel(channel)
       void client.removeChannel(cursorChannel)
       cursorChannelRef.current = null
+      setOpponentDown(0)
     }
     // The callback is intentionally kept stable through refs/state below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -421,6 +448,11 @@ function App() {
     }
     setCursorStates((current) => ({ ...defaults, ...current }))
   }, [player, players, room])
+
+  useEffect(() => {
+    if (!player || SPECTATING) return
+    sendBoardCount(cursorChannelRef.current, player.team, flipped.size)
+  }, [flipped, player])
 
   const sendCursor = useCallback(
     async (channel: RealtimeChannel | null, down: boolean, force = false) => {
@@ -716,6 +748,7 @@ function App() {
             setInput={setChatInput}
             onSubmit={handleSendChat}
           />
+          <OpponentBoard team={player.team === 1 ? 2 : 1} total={room.characters.length} down={opponentDown} />
           <div className="top-cams">
             <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
             <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
@@ -968,8 +1001,11 @@ function TeamChat({
   )
 }
 
-// Fondos del retrato: verdes, azules, morados y amarillos claros.
-const PORTRAIT_COLORS = ['#2f8f5b', '#1f5f9e', '#6a3fa0', '#f2df8a', '#4fae7a', '#2a7bbf', '#8a5cc7', '#e8cf6a']
+// Fondos del retrato: verdes, azules, morados, amarillos claros, rosas y marrones.
+const PORTRAIT_COLORS = [
+  '#2f8f5b', '#1f5f9e', '#6a3fa0', '#f2df8a', '#e07aa3', '#8a5a3b',
+  '#4fae7a', '#2a7bbf', '#8a5cc7', '#e8cf6a', '#f2a7c3', '#a87650',
+]
 
 // El color depende solo del nombre, así un personaje tiene el mismo fondo en todas las salas y equipos.
 function portraitColor(character: string) {
@@ -1005,6 +1041,39 @@ function CharacterCard({
         </div>
       </div>
     </button>
+  )
+}
+
+// Tablero del rival en miniatura: refleja cuántas fichas tiene bajadas, pero no cuáles. Cada cambio
+// baja o sube fichas al azar, así que las posiciones no coinciden con las del tablero real.
+function OpponentBoard({ team, total, down }: { team: Team; total: number; down: number }) {
+  const [downSlots, setDownSlots] = useState<Set<number>>(() => new Set())
+
+  useEffect(() => {
+    setDownSlots((current) => {
+      const target = Math.max(0, Math.min(total, down))
+      if (current.size === target) return current
+      const next = new Set(current)
+      if (target > current.size) {
+        const up = Array.from({ length: total }, (_, index) => index).filter((index) => !next.has(index))
+        for (const index of shuffle(up).slice(0, target - current.size)) next.add(index)
+      } else {
+        for (const index of shuffle([...next]).slice(0, current.size - target)) next.delete(index)
+      }
+      return next
+    })
+  }, [down, total])
+
+  return (
+    <section className="opponent-board" aria-label={`Tablero del ${TEAM_NAMES[team]}: ${downSlots.size} fichas bajadas`}>
+      <div className="opponent-grid">
+        {Array.from({ length: total }, (_, index) => (
+          <div key={index} className={`mini-card ${downSlots.has(index) ? 'is-down' : ''}`}>
+            <div className="mini-face" />
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
