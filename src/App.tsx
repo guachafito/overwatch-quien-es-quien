@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { ensureAnonymousSession, isSupabaseConfigured, supabase } from './supabase'
 import {
@@ -206,6 +206,10 @@ function App() {
   const shellRef = useRef<HTMLDivElement>(null)
   const ownLabelRef = useRef<HTMLDivElement>(null)
   const ownCursorImages = useScaledCursors(SPECTATING ? undefined : player?.slot)
+  // Callback estable para las fichas memoizadas: así un cursor o un mensaje no vuelve a pintar el tablero.
+  const handleFlipRef = useRef(handleFlip)
+  handleFlipRef.current = handleFlip
+  const onFlip = useCallback((character: string) => handleFlipRef.current(character), [])
 
   const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
   ownDownRef.current = flipped.size
@@ -363,13 +367,29 @@ function App() {
     // Presence marca quién está conectado de verdad: salir, cerrar la pestaña o perder la conexión lo quita.
     let knownOnline = new Map<string, string>()
     let firstSync = true
+    // Un corte breve de conexión saca y vuelve a meter al jugador en presence; solo se da por desconectado
+    // si sigue fuera pasado este margen, para no llenar el chat de salidas y entradas falsas.
+    const LEAVE_GRACE_MS = 6000
+    const pendingLeaves = new Map<string, number>()
+
+    // Los cursores llegan a ~30 mensajes por segundo por jugador: se acumulan y se pintan una vez por
+    // fotograma, en vez de re-renderizar toda la sala con cada mensaje (en OBS eso provocaba mucho lag).
+    let pendingCursors: Record<string, CursorState> = {}
+    let cursorFrame = 0
+    const flushCursors = () => {
+      cursorFrame = 0
+      const batch = pendingCursors
+      pendingCursors = {}
+      if (alive) setCursorStates((current) => ({ ...current, ...batch }))
+    }
 
     const cursorChannel = client
-      .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: true }, presence: { key: player.user_id } } })
+      .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: false }, presence: { key: player.user_id } } })
       .on('broadcast', { event: 'cursor' }, ({ payload }) => {
         const cursor = payload as CursorState
         if (!cursor?.userId || cursor.userId === player.user_id) return
-        setCursorStates((current) => ({ ...current, [cursor.userId]: cursor }))
+        pendingCursors[cursor.userId] = cursor
+        if (!cursorFrame) cursorFrame = window.requestAnimationFrame(flushCursors)
       })
       // Cada jugador anuncia cuántas fichas tiene bajadas su equipo; el rival lo pinta en su mini-tablero.
       .on('broadcast', { event: 'board-count' }, ({ payload }) => {
@@ -383,15 +403,34 @@ function App() {
 
         const entries: ChatEntry[] = []
         for (const [id, displayName] of online) {
+          // Vuelve dentro del margen de gracia: fue un corte, no una salida.
+          const pending = pendingLeaves.get(id)
+          if (pending !== undefined) {
+            window.clearTimeout(pending)
+            pendingLeaves.delete(id)
+            continue
+          }
           if (id === player.user_id || knownOnline.has(id)) continue
           entries.push(firstSync
             ? systemEntry('info', `${displayName} está en la sala`)
             : systemEntry('join', `${displayName} ha entrado en la sala`))
         }
         for (const [id, displayName] of knownOnline) {
-          if (id !== player.user_id && !online.has(id)) entries.push(systemEntry('leave', `${displayName} ha salido de la sala`))
+          if (id === player.user_id || online.has(id) || pendingLeaves.has(id)) continue
+          pendingLeaves.set(id, window.setTimeout(() => {
+            pendingLeaves.delete(id)
+            if (!alive) return
+            knownOnline.delete(id)
+            setOnlineIds(new Set(knownOnline.keys()))
+            setSystemEntries((current) => [...current, systemEntry('leave', `${displayName} ha salido de la sala`)])
+          }, LEAVE_GRACE_MS))
         }
 
+        // Mientras dura el margen de gracia el jugador sigue contando como conectado.
+        for (const id of pendingLeaves.keys()) {
+          const displayName = knownOnline.get(id)
+          if (displayName !== undefined && !online.has(id)) online.set(id, displayName)
+        }
         knownOnline = online
         firstSync = false
         setOnlineIds(new Set(online.keys()))
@@ -418,6 +457,8 @@ function App() {
 
     return () => {
       alive = false
+      if (cursorFrame) window.cancelAnimationFrame(cursorFrame)
+      for (const timer of pendingLeaves.values()) window.clearTimeout(timer)
       void client.removeChannel(channel)
       void client.removeChannel(cursorChannel)
       cursorChannelRef.current = null
@@ -762,7 +803,7 @@ function App() {
                 key={character}
                 character={character}
                 isDown={flipped.has(character)}
-                onToggle={handleFlip}
+                onToggle={onFlip}
               />
             ))}
           </section>
@@ -1014,7 +1055,7 @@ function portraitColor(character: string) {
   return PORTRAIT_COLORS[hash % PORTRAIT_COLORS.length]
 }
 
-function CharacterCard({
+const CharacterCard = memo(function CharacterCard({
   character,
   isDown,
   onToggle,
@@ -1042,11 +1083,11 @@ function CharacterCard({
       </div>
     </button>
   )
-}
+})
 
 // Tablero del rival en miniatura: refleja cuántas fichas tiene bajadas, pero no cuáles. Cada cambio
 // baja o sube fichas al azar, así que las posiciones no coinciden con las del tablero real.
-function OpponentBoard({ team, total, down }: { team: Team; total: number; down: number }) {
+const OpponentBoard = memo(function OpponentBoard({ team, total, down }: { team: Team; total: number; down: number }) {
   const [downSlots, setDownSlots] = useState<Set<number>>(() => new Set())
 
   useEffect(() => {
@@ -1075,13 +1116,14 @@ function OpponentBoard({ team, total, down }: { team: Team; total: number; down:
       </div>
     </section>
   )
-}
+})
 
 function RemoteCursor({ cursor }: { cursor: CursorState }) {
   return (
     <div
       className={`remote-cursor ${cursor.down ? 'down' : ''} ${TEAM_COLORS[cursor.team]}`}
-      style={{ left: `${cursor.x * 100}vw`, top: `${cursor.y * 100}vh` }}
+      // transform en vez de left/top: el cursor va en su propia capa y moverlo no repinta el tablero.
+      style={{ transform: `translate3d(calc(${cursor.x * 100}vw - 4px), calc(${cursor.y * 100}vh - 4px), 0)` }}
     >
       <img
         src={getSlotCursorFile(cursor.slot, cursor.down)}
