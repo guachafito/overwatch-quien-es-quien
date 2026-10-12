@@ -220,7 +220,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
  * Mini-tablero del rival: 8×3 fichas rojas en 8:9, centradas y limitadas por la altura disponible.
  * Solo refleja cuántas fichas tiene bajadas el otro equipo, en posiciones aleatorias.
  */
-.opponent-board { min-width: 0; height: 100%; container-type: size; display: grid; place-items: center; }
+.opponent-board { min-width: 0; height: 100%; container-type: size; display: grid; place-items: end; }
 .opponent-grid {
   --mini-gap: 4px;
   display: grid;
