@@ -235,6 +235,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   background: #b61b1b;
   border-top: 0.7cqw solid rgb(215 49 49);
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
+  will-change: transform;
 }
 .game-shell.blue .mini-face { border-right: 1.3cqw solid rgb(151 22 22); }
 .game-shell.red .mini-face { border-left: 1.3cqw solid rgb(151 22 22); }
@@ -312,6 +313,8 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   box-shadow: 0 8px 20px rgba(0,0,0,.25);
   text-align: left;
   transition: filter .28s ease;
+  /* Capa propia: el gris y la bajada de la cara se animan en la GPU en vez de repintar la ficha entera. */
+  will-change: filter;
 }
 .character-card.is-down { filter: grayscale(1); }
 .character-card:hover { box-shadow: 0 12px 26px rgba(0,0,0,.4); }
@@ -321,6 +324,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   border-top: 2.7cqw solid rgb(235 86 86);
   background: #ff0000;
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
+  will-change: transform;
 }
 /* Borde lateral: a la derecha en el equipo azul y a la izquierda en el rojo (vista en espejo). */
 .game-shell.blue .character-face { border-right: 3.7cqw solid rgb(187 28 28); }
@@ -352,8 +356,8 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 }
 
 .cursor-layer { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
-/* La posición llega por transform (ver RemoteCursor): capa propia, sin relayout ni repintar el tablero. */
-.remote-cursor { position: fixed; left: 0; top: 0; width: 1px; height: 1px; will-change: transform; transition: transform .05s linear; }
+/* RemoteCursor mueve el transform en cada fotograma (interpolado): capa propia, sin relayout ni repintar el tablero. */
+.remote-cursor { position: fixed; left: 0; top: 0; width: 1px; height: 1px; will-change: transform; }
 .remote-cursor img { position: absolute; left: 0; top: 0; width: 58px; height: 58px; object-fit: contain; filter: drop-shadow(0 5px 10px rgba(0,0,0,.4)); }
 .cursor-fallback { position: absolute; left: 0; top: 0; font-size: 50px; line-height: 50px; text-shadow: 0 3px 12px rgba(0,0,0,.7); color: #fff; }
 .remote-cursor img + .cursor-fallback { opacity: .0; }

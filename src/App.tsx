@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, FormEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { ensureAnonymousSession, isSupabaseConfigured, supabase } from './supabase'
 import {
@@ -198,6 +198,11 @@ function App() {
   const [chatInput, setChatInput] = useState('')
   const [cursorStates, setCursorStates] = useState<Record<string, CursorState>>({})
   const cursorChannelRef = useRef<RealtimeChannel | null>(null)
+  // Clics en fichas pendientes de confirmar y último tablero confirmado por el servidor (ver handleFlip).
+  const pendingFlipsRef = useRef(0)
+  const serverBoardRef = useRef<TeamBoard | null>(null)
+  // Última posición recibida de cada cursor remoto; RemoteCursor la interpola fotograma a fotograma.
+  const cursorTargetsRef = useRef(new Map<string, CursorState>())
   const lastCursorSentRef = useRef(0)
   const currentDownRef = useRef(false)
   const localCursorRef = useRef<CursorState | null>(null)
@@ -226,6 +231,7 @@ function App() {
       getTeamMessages(supabase, activeRoom.id, activePlayer.team),
     ])
     setPlayers(newPlayers)
+    serverBoardRef.current = newBoard
     setBoard(newBoard)
     setMessages(newMessages)
   }, [])
@@ -347,7 +353,9 @@ function App() {
         { event: 'UPDATE', schema: 'public', table: 'team_boards', filter: `room_id=eq.${room.id}` },
         (payload) => {
           const incoming = payload.new as TeamBoard
-          if (incoming.team === player.team) setBoard(incoming)
+          if (incoming.team !== player.team) return
+          serverBoardRef.current = incoming
+          if (pendingFlipsRef.current === 0) setBoard(incoming)
         },
       )
       .on(
@@ -372,24 +380,20 @@ function App() {
     const LEAVE_GRACE_MS = 6000
     const pendingLeaves = new Map<string, number>()
 
-    // Los cursores llegan a ~30 mensajes por segundo por jugador: se acumulan y se pintan una vez por
-    // fotograma, en vez de re-renderizar toda la sala con cada mensaje (en OBS eso provocaba mucho lag).
-    let pendingCursors: Record<string, CursorState> = {}
-    let cursorFrame = 0
-    const flushCursors = () => {
-      cursorFrame = 0
-      const batch = pendingCursors
-      pendingCursors = {}
-      if (alive) setCursorStates((current) => ({ ...current, ...batch }))
-    }
+    // Las posiciones de los cursores van a un ref que RemoteCursor lee en cada fotograma, sin pasar por
+    // React. Solo se re-renderiza la sala cuando cambia algo visible aparte de la posición (clic, nombre…).
+    const cursorMeta = new Map<string, string>()
 
     const cursorChannel = client
       .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: false }, presence: { key: player.user_id } } })
       .on('broadcast', { event: 'cursor' }, ({ payload }) => {
         const cursor = payload as CursorState
         if (!cursor?.userId || cursor.userId === player.user_id) return
-        pendingCursors[cursor.userId] = cursor
-        if (!cursorFrame) cursorFrame = window.requestAnimationFrame(flushCursors)
+        cursorTargetsRef.current.set(cursor.userId, cursor)
+        const meta = `${cursor.team}|${cursor.slot}|${cursor.down}|${cursor.displayName}`
+        if (cursorMeta.get(cursor.userId) === meta) return
+        cursorMeta.set(cursor.userId, meta)
+        setCursorStates((current) => ({ ...current, [cursor.userId]: cursor }))
       })
       // Cada jugador anuncia cuántas fichas tiene bajadas su equipo; el rival lo pinta en su mini-tablero.
       .on('broadcast', { event: 'board-count' }, ({ payload }) => {
@@ -457,7 +461,7 @@ function App() {
 
     return () => {
       alive = false
-      if (cursorFrame) window.cancelAnimationFrame(cursorFrame)
+      cursorTargetsRef.current.clear()
       for (const timer of pendingLeaves.values()) window.clearTimeout(timer)
       void client.removeChannel(channel)
       void client.removeChannel(cursorChannel)
@@ -632,11 +636,23 @@ function App() {
   async function handleFlip(character: string) {
     if (!supabase || !room || !player || SPECTATING) return
     setError('')
+    // La ficha se mueve al instante; el tablero del servidor se aplica cuando no queda ningún clic en
+    // vuelo, para que una respuesta intermedia no devuelva a su sitio una ficha recién pulsada.
+    pendingFlipsRef.current += 1
+    setBoard((current) => current && {
+      ...current,
+      flipped: current.flipped.includes(character)
+        ? current.flipped.filter((name) => name !== character)
+        : [...current.flipped, character],
+    })
     try {
       const updated = await toggleCard(supabase, room.id, player.team, character)
-      if (updated) setBoard(updated)
+      if (updated) serverBoardRef.current = updated
     } catch (caught) {
       setError(errorText(caught))
+    } finally {
+      pendingFlipsRef.current -= 1
+      if (pendingFlipsRef.current === 0 && serverBoardRef.current) setBoard(serverBoardRef.current)
     }
   }
 
@@ -645,7 +661,10 @@ function App() {
     setBusy(true)
     try {
       const updated = await resetTeamBoard(supabase, room.id, player.team)
-      if (updated) setBoard(updated)
+      if (updated) {
+        serverBoardRef.current = updated
+        setBoard(updated)
+      }
     } catch (caught) {
       setError(errorText(caught))
     } finally {
@@ -815,7 +834,7 @@ function App() {
 
       <div className="cursor-layer" aria-hidden="true">
         {remoteCursors.map((cursor) => (
-          <RemoteCursor key={cursor.userId} cursor={cursor} />
+          <RemoteCursor key={cursor.userId} cursor={cursor} targets={cursorTargetsRef.current} />
         ))}
         <div ref={ownLabelRef} className={`own-cursor-label ${TEAM_COLORS[player.team]}`}>
           {player.display_name}
@@ -1118,13 +1137,46 @@ const OpponentBoard = memo(function OpponentBoard({ team, total, down }: { team:
   )
 })
 
-function RemoteCursor({ cursor }: { cursor: CursorState }) {
+// Suavizado de los cursores remotos: cuanto mayor, más suave pero con más retraso respecto al real.
+const CURSOR_SMOOTHING_MS = 45
+
+// Los mensajes llegan a saltos (cada ~35 ms y con la latencia irregular de la red). En vez de saltar a
+// cada posición, el cursor se acerca a la última recibida en cada fotograma, moviendo solo el transform.
+function RemoteCursor({ cursor, targets }: { cursor: CursorState; targets: Map<string, CursorState> }) {
+  const elementRef = useRef<HTMLDivElement>(null)
+
+  // Layout effect: el primer fotograma ya sale en su sitio, sin pasar por la esquina superior izquierda.
+  useLayoutEffect(() => {
+    const element = elementRef.current
+    if (!element) return
+    const start = targets.get(cursor.userId) ?? cursor
+    let x = start.x
+    let y = start.y
+    let last = performance.now()
+    let frame = 0
+    let drawn = ''
+
+    const tick = (now: number) => {
+      const target = targets.get(cursor.userId) ?? cursor
+      const blend = 1 - Math.exp(-(now - last) / CURSOR_SMOOTHING_MS)
+      last = now
+      x += (target.x - x) * blend
+      y += (target.y - y) * blend
+      const transform = `translate3d(${(x * window.innerWidth - 4).toFixed(1)}px, ${(y * window.innerHeight - 4).toFixed(1)}px, 0)`
+      if (transform !== drawn) {
+        element.style.transform = transform
+        drawn = transform
+      }
+      frame = window.requestAnimationFrame(tick)
+    }
+    tick(last)
+    return () => window.cancelAnimationFrame(frame)
+    // Solo depende del jugador: la posición se lee del ref en cada fotograma.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cursor.userId, targets])
+
   return (
-    <div
-      className={`remote-cursor ${cursor.down ? 'down' : ''} ${TEAM_COLORS[cursor.team]}`}
-      // transform en vez de left/top: el cursor va en su propia capa y moverlo no repinta el tablero.
-      style={{ transform: `translate3d(calc(${cursor.x * 100}vw - 4px), calc(${cursor.y * 100}vh - 4px), 0)` }}
-    >
+    <div ref={elementRef} className={`remote-cursor ${cursor.down ? 'down' : ''} ${TEAM_COLORS[cursor.team]}`}>
       <img
         src={getSlotCursorFile(cursor.slot, cursor.down)}
         alt=""
