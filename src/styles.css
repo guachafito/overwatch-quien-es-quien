@@ -220,7 +220,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
  * Mini-tablero del rival: 8×3 fichas rojas en 8:9, centradas y limitadas por la altura disponible.
  * Solo refleja cuántas fichas tiene bajadas el otro equipo, en posiciones aleatorias.
  */
-.opponent-board { min-width: 0; height: 100%; container-type: size; display: grid; place-items: center; }
+.opponent-board { min-width: 0; height: 100%; container-type: size; display: grid; place-items: end; }
 .opponent-grid {
   --mini-gap: 4px;
   display: grid;
@@ -230,10 +230,10 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 }
 .mini-card { position: relative; aspect-ratio: 8 / 9; overflow: hidden; border-radius: 4.5% / 4%; background: transparent; box-shadow: 0 4px 10px rgba(0,0,0,.25); }
 .mini-face {
-  position: absolute; inset: 0;
-  border-radius: 4.5% / 4%;
-  background: #ff0000;
-  box-shadow: inset 0 0 0 2px rgb(215 0 0);
+  position: absolute;
+  inset: 0;
+  background: #b61b1b;
+  border-top: 0.7cqw solid rgb(215 49 49);
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
 }
 .game-shell.blue .mini-face { border-right: 1.3cqw solid rgb(151 22 22); }
@@ -308,7 +308,7 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   overflow: hidden;
   container-type: inline-size;
   border-radius: 4.5% / 4%;
-  background: #bfd1e336;
+  background: transparent;
   box-shadow: 0 8px 20px rgba(0,0,0,.25);
   text-align: left;
   transition: filter .28s ease;
@@ -318,14 +318,13 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .character-face {
   position: absolute; inset: 0;
   border-radius: 4.5% / 4%;
-  border-right: 2.7cqw solid rgb(187 80 80);
   border-top: 2.7cqw solid rgb(235 86 86);
   background: #ff0000;
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
 }
 /* Borde lateral: a la derecha en el equipo azul y a la izquierda en el rojo (vista en espejo). */
-.game-shell.blue .character-face { border-right: 2.7cqw solid rgb(187 80 80); }
-.game-shell.red .character-face { border-left: 2.7cqw solid rgb(187 80 80); }
+.game-shell.blue .character-face { border-right: 3.7cqw solid rgb(187 28 28); }
+.game-shell.red .character-face { border-left: 3.7cqw solid rgb(187 28 28); }
 .character-card.is-down .character-face { transform: translateY(80%); }
 .card-frame {
   position: absolute; top: 4.5%; left: 4%; right: 4%; bottom: 8%;
