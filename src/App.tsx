@@ -1,6 +1,8 @@
 import { CSSProperties, FormEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { RealtimeChannel } from '@supabase/supabase-js'
+import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js'
 import { ensureAnonymousSession, isSupabaseConfigured, supabase } from './supabase'
+import { CURSOR_HOTSPOT, CursorReceiver, CursorSender, setBoardElement } from './cursors'
+import type { CursorPacket } from './cursors'
 import {
   createRoom,
   getBoardDownCounts,
@@ -17,7 +19,7 @@ import {
   toggleCard,
 } from './game'
 import type { RoomOccupant } from './game'
-import type { ChatMessage, CursorState, Player, Room, Slot, Team, TeamBoard } from './types'
+import type { ChatMessage, Player, Room, Slot, Team, TeamBoard } from './types'
 
 const TEAM_NAMES: Record<Team, string> = { 1: 'Equipo Azul', 2: 'Equipo Rojo' }
 const TEAM_COLORS: Record<Team, string> = { 1: 'blue', 2: 'red' }
@@ -49,9 +51,8 @@ function getSlotCursorFile(slot: Slot, down: boolean) {
     : `${import.meta.env.BASE_URL}cursors/cursor.png`
 }
 
-// Tamaño y punto activo con los que se dibujan los cursores remotos (ver .remote-cursor en styles.css).
+// Tamaño con el que se dibujan los cursores remotos (ver .remote-cursor en styles.css).
 const CURSOR_SIZE = 58
-const CURSOR_HOTSPOT = 4
 const OWN_LABEL_OFFSET = { x: 30, y: 32 }
 
 // Los navegadores no admiten cursores nativos de más de 128 px, así que los PNG se reducen en un canvas.
@@ -148,12 +149,30 @@ type ChatEntry =
   | ({ kind: 'chat' } & ChatMessage)
   | { kind: 'system'; id: string; variant: SystemVariant; text: string; created_at: string }
 
-type PresenceMeta = { user_id: string; display_name: string }
+// La presencia lleva el puesto y el equipo: las cámaras y los cursores no dependen de que llegue a
+// tiempo la lista de room_players (antes un jugador podía quedarse sin nombre ni cursor).
+type PresenceMeta = { user_id: string; display_name: string; team: Team; slot: Slot }
 
-type BoardCount = { team: Team; down: number }
+type BoardCount = { team: Team; down: number; at?: string }
 
-function sendBoardCount(channel: RealtimeChannel | null, team: Team, down: number) {
-  void channel?.send({ type: 'broadcast', event: 'board-count', payload: { team, down } satisfies BoardCount })
+type RemotePlayer = { userId: string; slot: Slot; name: string }
+
+// Ficha cambiada en local o por un compañero antes de que llegue el tablero de la base de datos.
+// Hasta `applyAt` se ve como estaba; de ahí a `until` en el estado nuevo; después manda el servidor.
+type FlipOverride = { down: boolean; applyAt: number; until: number }
+const FLIP_HOLD_MS = 2500
+
+function sendBoardCount(channel: RealtimeChannel | null, count: BoardCount) {
+  void channel?.send({ type: 'broadcast', event: 'board-count', payload: count })
+}
+
+// supabase-js devuelve el canal que ya exista con ese nombre aunque se esté cerrando (al salir y volver
+// a entrar, o en modo estricto), y entonces no se le pueden añadir escuchas: se cierra antes del todo.
+async function freshChannel(client: SupabaseClient, name: string, options: Parameters<SupabaseClient['channel']>[1]) {
+  for (const existing of client.getChannels()) {
+    if (existing.topic === `realtime:${name}`) await client.removeChannel(existing)
+  }
+  return client.channel(name, options)
 }
 
 function systemEntry(variant: SystemVariant, text: string): ChatEntry {
@@ -178,14 +197,20 @@ function App() {
   const [userId, setUserId] = useState('')
   const [room, setRoom] = useState<Room | null>(null)
   const [player, setPlayer] = useState<Player | null>(null)
-  const [players, setPlayers] = useState<Player[]>([])
-  const [board, setBoard] = useState<TeamBoard | null>(null)
+  // Último tablero confirmado por el servidor; lo que se ve es este más los cambios en vuelo (flipped).
+  const [serverBoard, setServerBoard] = useState<TeamBoard | null>(null)
+  const flipOverridesRef = useRef(new Map<string, FlipOverride>())
+  const flipTimerRef = useRef(0)
+  const [flipTick, setFlipTick] = useState(0)
+  // Cambios de tablero recibidos de la base de datos (ver handleFlip).
+  const boardEventsRef = useRef(0)
   // Fichas bajadas por el equipo rival: solo el número, nunca cuáles.
   const [opponentDown, setOpponentDown] = useState(0)
-  const ownDownRef = useRef(0)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [systemEntries, setSystemEntries] = useState<ChatEntry[]>([])
-  const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set())
+  const [online, setOnline] = useState<Map<string, PresenceMeta>>(() => new Map())
+  // Compañeros de los que llegan cursores aunque su presencia no haya llegado.
+  const [packetUsers, setPacketUsers] = useState<Record<string, RemotePlayer>>({})
   const [chatMuted, setChatMuted] = useState(readChatMuted)
   const chatMutedRef = useRef(chatMuted)
   const [name, setName] = useState('')
@@ -195,57 +220,74 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [chatInput, setChatInput] = useState('')
-  const [cursorStates, setCursorStates] = useState<Record<string, CursorState>>({})
-  const cursorChannelRef = useRef<RealtimeChannel | null>(null)
-  // Clics en fichas pendientes de confirmar y último tablero confirmado por el servidor (ver handleFlip).
-  const pendingFlipsRef = useRef(0)
-  const serverBoardRef = useRef<TeamBoard | null>(null)
-  // Última posición recibida de cada cursor remoto; RemoteCursor la interpola fotograma a fotograma.
-  const cursorTargetsRef = useRef(new Map<string, CursorState>())
-  const lastCursorSentRef = useRef(0)
+  const [cursorReceiver] = useState(() => new CursorReceiver())
+  const senderRef = useRef<CursorSender | null>(null)
+  const roomChannelRef = useRef<RealtimeChannel | null>(null)
+  const teamChannelRef = useRef<RealtimeChannel | null>(null)
   const currentDownRef = useRef(false)
-  const localCursorRef = useRef<CursorState | null>(null)
   const initializedRef = useRef(false)
   const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
   const shellRef = useRef<HTMLDivElement>(null)
   const ownLabelRef = useRef<HTMLDivElement>(null)
   const ownCursorImages = useScaledCursors(SPECTATING ? undefined : player?.slot)
-  // Callback estable para las fichas memoizadas: así un cursor o un mensaje no vuelve a pintar el tablero.
+  // Callbacks estables para los componentes memoizados: así un mensaje no vuelve a pintar el tablero.
   const handleFlipRef = useRef(handleFlip)
   handleFlipRef.current = handleFlip
   const onFlip = useCallback((character: string) => handleFlipRef.current(character), [])
+  const handleSendChatRef = useRef(handleSendChat)
+  handleSendChatRef.current = handleSendChat
+  const onSendChat = useCallback((body: string) => handleSendChatRef.current(body), [])
+  const onToggleMute = useCallback(() => setChatMuted((current) => !current), [])
 
-  const flipped = useMemo(() => new Set(board?.flipped ?? []), [board])
-  ownDownRef.current = flipped.size
-  const sortedPlayers = useMemo(
-    () => [...players].sort((a, b) => a.slot - b.slot),
-    [players],
-  )
+  // Quita los cambios caducados, programa el siguiente instante en que cambie alguno y repinta.
+  const refreshFlips = useCallback(() => {
+    window.clearTimeout(flipTimerRef.current)
+    const now = Date.now()
+    let next = Infinity
+    for (const [character, override] of flipOverridesRef.current) {
+      if (now >= override.until) {
+        flipOverridesRef.current.delete(character)
+        continue
+      }
+      next = Math.min(next, override.applyAt > now ? override.applyAt : override.until)
+    }
+    if (next !== Infinity) flipTimerRef.current = window.setTimeout(refreshFlips, next - now + 1)
+    setFlipTick((tick) => tick + 1)
+  }, [])
+
+  const flipped = useMemo(() => {
+    const result = new Set(serverBoard?.flipped ?? [])
+    const now = Date.now()
+    for (const [character, override] of flipOverridesRef.current) {
+      if (now >= override.until) continue
+      const down = now < override.applyAt ? !override.down : override.down
+      if (down) result.add(character)
+      else result.delete(character)
+    }
+    return result
+    // flipTick fuerza el recálculo cuando cambian los overrides (que viven en un ref).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverBoard, flipTick])
 
   const refreshRoomData = useCallback(async (activeRoom: Room, activePlayer: Player) => {
     if (!supabase) return
-    const [newPlayers, newBoard, newMessages] = await Promise.all([
-      getPlayers(supabase, activeRoom.id),
+    const [newBoard, newMessages] = await Promise.all([
       getTeamBoard(supabase, activeRoom.id, activePlayer.team),
       getTeamMessages(supabase, activeRoom.id, activePlayer.team),
     ])
-    setPlayers(newPlayers)
-    serverBoardRef.current = newBoard
-    setBoard(newBoard)
+    setServerBoard(newBoard)
     setMessages(newMessages)
   }, [])
 
   const enterRoom = useCallback(
     async (activeRoom: Room) => {
       if (!supabase || !userId) return
-      const newPlayers = await getPlayers(supabase, activeRoom.id)
-      const me = newPlayers.find((candidate) => candidate.user_id === userId)
+      const players = await getPlayers(supabase, activeRoom.id)
+      const me = players.find((candidate) => candidate.user_id === userId)
       if (!me) throw new Error('El usuario no tiene un puesto en esta sala.')
+      await refreshRoomData(activeRoom, me)
       setRoom(activeRoom)
       setPlayer(me)
-      setPlayers(newPlayers)
-      await refreshRoomData(activeRoom, me)
       const params = new URLSearchParams(window.location.search)
       params.set('room', activeRoom.code)
       window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`)
@@ -296,8 +338,8 @@ function App() {
     ;(async () => {
       try {
         const { room: watchedRoom, team } = await spectateTeam(client, OBS_KEY)
-        // El espectador reutiliza la vista de juego con un jugador ficticio que no está en room_players,
-        // así que no aparece en las cámaras ni en el contador de jugadores.
+        // El espectador reutiliza la vista de juego con un jugador ficticio que no está en room_players
+        // ni en la presencia, así que no ocupa cámara ni cuenta como jugador.
         const viewer: Player = {
           room_id: watchedRoom.id,
           user_id: userId,
@@ -306,9 +348,9 @@ function App() {
           display_name: 'OBS',
           joined_at: new Date().toISOString(),
         }
+        await refreshRoomData(watchedRoom, viewer)
         setRoom(watchedRoom)
         setPlayer(viewer)
-        await refreshRoomData(watchedRoom, viewer)
       } catch (caught) {
         setError(errorText(caught))
       }
@@ -335,227 +377,238 @@ function App() {
   useEffect(() => {
     if (!room || !player || !supabase) return
     const client = supabase
-
+    const receiver = cursorReceiver
     let alive = true
-    const channel = client
-      .channel(`room-db-${room.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'room_players', filter: `room_id=eq.${room.id}` },
-        async () => {
-          if (!alive) return
-          const updated = await getPlayers(client, room.id)
-          if (alive) setPlayers(updated)
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'team_boards', filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          const incoming = payload.new as TeamBoard
-          if (incoming.team !== player.team) return
-          serverBoardRef.current = incoming
-          if (pendingFlipsRef.current === 0) setBoard(incoming)
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          const incoming = payload.new as ChatMessage
-          if (incoming.team !== player.team) return
-          setMessages((current) => (current.some((message) => message.id === incoming.id) ? current : [...current, incoming]))
-          if (!SPECTATING && incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
-        },
-      )
-      .subscribe()
+    let roomChannel: RealtimeChannel | null = null
+    let teamChannel: RealtimeChannel | null = null
+    let sender: CursorSender | null = null
 
     setSystemEntries(SPECTATING ? [] : [systemEntry('self', 'Has entrado en la sala')])
 
+    receiver.handlers = {
+      onUser: (id, slot, displayName) => {
+        if (alive) setPacketUsers((current) => ({ ...current, [id]: { userId: id, slot: slot as Slot, name: displayName } }))
+      },
+      // El clic de un compañero se aplica cuando su cursor remoto llega a la ficha (ver cursors.ts).
+      onFlip: (character, down, applyAt) => {
+        if (!alive) return
+        flipOverridesRef.current.set(character, { down, applyAt, until: Math.max(applyAt, Date.now()) + FLIP_HOLD_MS })
+        refreshFlips()
+      },
+    }
+
     // Presence marca quién está conectado de verdad: salir, cerrar la pestaña o perder la conexión lo quita.
-    let knownOnline = new Map<string, string>()
+    let knownOnline = new Map<string, PresenceMeta>()
     let firstSync = true
     // Un corte breve de conexión saca y vuelve a meter al jugador en presence; solo se da por desconectado
     // si sigue fuera pasado este margen, para no llenar el chat de salidas y entradas falsas.
     const LEAVE_GRACE_MS = 6000
     const pendingLeaves = new Map<string, number>()
+    let lastCountAt = ''
+    // Tras un corte se vuelven a leer tablero y chat por si se perdió algún cambio mientras tanto.
+    let needsResync = false
 
-    // Las posiciones de los cursores van a un ref que RemoteCursor lee en cada fotograma, sin pasar por
-    // React. Solo se re-renderiza la sala cuando cambia algo visible aparte de la posición (clic, nombre…).
-    const cursorMeta = new Map<string, string>()
+    const onPresenceSync = (channel: RealtimeChannel) => {
+      const state = channel.presenceState<PresenceMeta>()
+      const current = new Map<string, PresenceMeta>()
+      for (const [key, metas] of Object.entries(state)) {
+        const meta = metas[metas.length - 1]
+        if (meta) current.set(key, meta)
+      }
 
-    const cursorChannel = client
-      .channel(`room-cursors-${room.id}`, { config: { broadcast: { self: false }, presence: { key: player.user_id } } })
-      .on('broadcast', { event: 'cursor' }, ({ payload }) => {
-        const cursor = payload as CursorState
-        if (!cursor?.userId || cursor.userId === player.user_id) return
-        cursorTargetsRef.current.set(cursor.userId, cursor)
-        const meta = `${cursor.team}|${cursor.slot}|${cursor.down}|${cursor.displayName}`
-        if (cursorMeta.get(cursor.userId) === meta) return
-        cursorMeta.set(cursor.userId, meta)
-        setCursorStates((current) => ({ ...current, [cursor.userId]: cursor }))
+      const entries: ChatEntry[] = []
+      for (const [id, meta] of current) {
+        // Vuelve dentro del margen de gracia: fue un corte, no una salida.
+        const pending = pendingLeaves.get(id)
+        if (pending !== undefined) {
+          window.clearTimeout(pending)
+          pendingLeaves.delete(id)
+          continue
+        }
+        if (id === player.user_id || knownOnline.has(id)) continue
+        entries.push(firstSync
+          ? systemEntry('info', `${meta.display_name} está en la sala`)
+          : systemEntry('join', `${meta.display_name} ha entrado en la sala`))
+      }
+      for (const [id, meta] of knownOnline) {
+        if (id === player.user_id || current.has(id) || pendingLeaves.has(id)) continue
+        pendingLeaves.set(id, window.setTimeout(() => {
+          pendingLeaves.delete(id)
+          if (!alive) return
+          knownOnline.delete(id)
+          receiver.forget(id)
+          setOnline(new Map(knownOnline))
+          setPacketUsers((users) => {
+            const rest = { ...users }
+            delete rest[id]
+            return rest
+          })
+          setSystemEntries((list) => [...list, systemEntry('leave', `${meta.display_name} ha salido de la sala`)])
+        }, LEAVE_GRACE_MS))
+      }
+
+      // Mientras dura el margen de gracia el jugador sigue contando como conectado.
+      for (const id of pendingLeaves.keys()) {
+        const meta = knownOnline.get(id)
+        if (meta && !current.has(id)) current.set(id, meta)
+      }
+      knownOnline = current
+      firstSync = false
+      setOnline(new Map(current))
+      if (entries.length) setSystemEntries((list) => [...list, ...entries])
+    }
+
+    ;(async () => {
+      // Canal de sala (poco tráfico): cambios de la base de datos, presencia y recuento de fichas del rival.
+      const roomCh = await freshChannel(client, `room-${room.id}`, {
+        config: { broadcast: { self: false }, presence: { key: player.user_id } },
       })
-      // Cada jugador anuncia cuántas fichas tiene bajadas su equipo; el rival lo pinta en su mini-tablero.
-      .on('broadcast', { event: 'board-count' }, ({ payload }) => {
-        const count = payload as BoardCount
-        if (count?.team && count.team !== player.team) setOpponentDown(count.down)
+      // Canal del equipo (cursores): el rival y su OBS no reciben estos mensajes, que son la mayoría.
+      const teamCh = await freshChannel(client, `room-${room.id}-team-${player.team}`, {
+        config: { broadcast: { self: false } },
       })
-      .on('presence', { event: 'sync' }, () => {
-        const state = cursorChannel.presenceState<PresenceMeta>()
-        const online = new Map<string, string>()
-        for (const [key, metas] of Object.entries(state)) online.set(key, metas[0]?.display_name ?? 'Jugador')
+      if (!alive) {
+        void client.removeChannel(roomCh)
+        void client.removeChannel(teamCh)
+        return
+      }
+      roomChannel = roomCh
+      teamChannel = teamCh
+      roomChannelRef.current = roomCh
+      teamChannelRef.current = teamCh
 
-        const entries: ChatEntry[] = []
-        for (const [id, displayName] of online) {
-          // Vuelve dentro del margen de gracia: fue un corte, no una salida.
-          const pending = pendingLeaves.get(id)
-          if (pending !== undefined) {
-            window.clearTimeout(pending)
-            pendingLeaves.delete(id)
-            continue
+      roomCh
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'team_boards', filter: `room_id=eq.${room.id}` },
+          (payload) => {
+            const incoming = payload.new as TeamBoard
+            if (incoming.team !== player.team) return
+            // Llegan en el orden en que se guardaron, así que el último siempre es el bueno.
+            boardEventsRef.current += 1
+            setServerBoard(incoming)
+          },
+        )
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${room.id}` },
+          (payload) => {
+            const incoming = payload.new as ChatMessage
+            if (incoming.team !== player.team) return
+            setMessages((current) => (current.some((message) => message.id === incoming.id) ? current : [...current, incoming]))
+            if (!SPECTATING && incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
+          },
+        )
+        // Quien cambia una ficha anuncia el nuevo recuento de su equipo; el rival lo pinta en su mini-tablero.
+        .on('broadcast', { event: 'board-count' }, ({ payload }) => {
+          const count = payload as BoardCount
+          if (!count?.team || count.team === player.team) return
+          if (count.at && lastCountAt && count.at < lastCountAt) return
+          if (count.at) lastCountAt = count.at
+          setOpponentDown(count.down)
+        })
+        .on('presence', { event: 'sync' }, () => onPresenceSync(roomCh))
+        .subscribe((status) => {
+          if (!alive) return
+          if (status !== 'SUBSCRIBED') {
+            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') needsResync = true
+            return
           }
-          if (id === player.user_id || knownOnline.has(id)) continue
-          entries.push(firstSync
-            ? systemEntry('info', `${displayName} está en la sala`)
-            : systemEntry('join', `${displayName} ha entrado en la sala`))
-        }
-        for (const [id, displayName] of knownOnline) {
-          if (id === player.user_id || online.has(id) || pendingLeaves.has(id)) continue
-          pendingLeaves.set(id, window.setTimeout(() => {
-            pendingLeaves.delete(id)
-            if (!alive) return
-            knownOnline.delete(id)
-            setOnlineIds(new Set(knownOnline.keys()))
-            setSystemEntries((current) => [...current, systemEntry('leave', `${displayName} ha salido de la sala`)])
-          }, LEAVE_GRACE_MS))
-        }
+          if (needsResync) {
+            needsResync = false
+            refreshRoomData(room, player).catch(() => {
+              // Se reintentará en la próxima reconexión.
+            })
+          }
+          // El recuento del rival se lee de la base de datos al conectar; los cambios llegan por broadcast.
+          getBoardDownCounts(client, room.id)
+            .then((counts) => {
+              if (alive) setOpponentDown(counts[player.team === 1 ? 2 : 1])
+            })
+            .catch(() => {
+              // Sin la migración aplicada el mini-tablero se queda con todas las fichas subidas.
+            })
+          // El espectador solo escucha: sin track no cuenta como conectado ni ocupa cámara.
+          if (SPECTATING) return
+          void roomCh.track({
+            user_id: player.user_id,
+            display_name: player.display_name,
+            team: player.team,
+            slot: player.slot,
+          } satisfies PresenceMeta)
+        })
 
-        // Mientras dura el margen de gracia el jugador sigue contando como conectado.
-        for (const id of pendingLeaves.keys()) {
-          const displayName = knownOnline.get(id)
-          if (displayName !== undefined && !online.has(id)) online.set(id, displayName)
-        }
-        knownOnline = online
-        firstSync = false
-        setOnlineIds(new Set(online.keys()))
-        if (entries.length) setSystemEntries((current) => [...current, ...entries])
-      })
-      .subscribe((status) => {
-        if (status !== 'SUBSCRIBED') return
-        // El recuento inicial del rival se lee de la base de datos; los cambios llegan por broadcast.
-        getBoardDownCounts(client, room.id)
-          .then((counts) => {
-            if (alive) setOpponentDown(counts[player.team === 1 ? 2 : 1])
-          })
-          .catch(() => {
-            // Sin la migración aplicada el mini-tablero se queda con todas las fichas subidas.
-          })
-        // El espectador solo escucha: sin track no cuenta como conectado ni envía cursor.
-        if (SPECTATING) return
-        void cursorChannel.track({ user_id: player.user_id, display_name: player.display_name } satisfies PresenceMeta)
-        sendCursor(cursorChannelRef.current ?? cursorChannel, false, true)
-        sendBoardCount(cursorChannel, player.team, ownDownRef.current)
-      })
+      teamCh
+        .on('broadcast', { event: 'cursor' }, ({ payload }) => receiver.receive(payload as CursorPacket))
+        // Reinicio del tablero: se aplica al momento, sin esperar a la base de datos.
+        .on('broadcast', { event: 'board' }, ({ payload }) => {
+          const incoming = payload as Pick<TeamBoard, 'flipped' | 'updated_at'>
+          if (!Array.isArray(incoming?.flipped)) return
+          flipOverridesRef.current.clear()
+          setServerBoard((current) => current && { ...current, flipped: incoming.flipped, updated_at: incoming.updated_at })
+          refreshFlips()
+        })
+        .subscribe((status) => {
+          if (alive && status === 'SUBSCRIBED') sender?.resend()
+        })
 
-    cursorChannelRef.current = cursorChannel
+      if (!SPECTATING) {
+        sender = new CursorSender(
+          // Sin conexión se descarta (send() caería a la API REST); al reconectar se reenvía la posición.
+          (packet) => {
+            if (teamCh.state === 'joined') void teamCh.send({ type: 'broadcast', event: 'cursor', payload: packet })
+          },
+          { userId: player.user_id, slot: player.slot, name: player.display_name },
+        )
+        senderRef.current = sender
+      }
+    })()
 
     return () => {
       alive = false
-      cursorTargetsRef.current.clear()
+      sender?.dispose()
+      senderRef.current = null
+      receiver.handlers = {}
+      receiver.reset()
       for (const timer of pendingLeaves.values()) window.clearTimeout(timer)
-      void client.removeChannel(channel)
-      void client.removeChannel(cursorChannel)
-      cursorChannelRef.current = null
+      window.clearTimeout(flipTimerRef.current)
+      flipOverridesRef.current.clear()
+      if (roomChannel) void client.removeChannel(roomChannel)
+      if (teamChannel) void client.removeChannel(teamChannel)
+      roomChannelRef.current = null
+      teamChannelRef.current = null
       setOpponentDown(0)
+      setOnline(new Map())
+      setPacketUsers({})
     }
     // The callback is intentionally kept stable through refs/state below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, player])
 
   useEffect(() => {
-    if (!room || !player) return
-    const defaults: Record<string, CursorState> = {}
-    for (const slot of SLOTS) {
-      const rosterPlayer = players.find((candidate) => candidate.slot === slot)
-      const position = CURSOR_ANCHORS[slot]
-      if (rosterPlayer) {
-        defaults[rosterPlayer.user_id] = {
-          userId: rosterPlayer.user_id,
-          team: rosterPlayer.team,
-          slot: rosterPlayer.slot,
-          displayName: rosterPlayer.display_name,
-          x: position.x,
-          y: position.y,
-          down: false,
-          ts: Date.now(),
-        }
-      }
-    }
-    setCursorStates((current) => ({ ...defaults, ...current }))
-  }, [player, players, room])
-
-  useEffect(() => {
-    if (!player || SPECTATING) return
-    sendBoardCount(cursorChannelRef.current, player.team, flipped.size)
-  }, [flipped, player])
-
-  const sendCursor = useCallback(
-    async (channel: RealtimeChannel | null, down: boolean, force = false) => {
-      if (!channel || !room || !player) return
-      const now = performance.now()
-      if (!force && now - lastCursorSentRef.current < 35) return
-      lastCursorSentRef.current = now
-      const state = localCursorRef.current ?? {
-        userId: player.user_id,
-        team: player.team,
-        slot: player.slot,
-        displayName: player.display_name,
-        x: CURSOR_ANCHORS[player.slot].x,
-        y: CURSOR_ANCHORS[player.slot].y,
-        down: false,
-        ts: Date.now(),
-      }
-      const payload: CursorState = { ...state, down, ts: Date.now() }
-      localCursorRef.current = payload
-      await channel.send({ type: 'broadcast', event: 'cursor', payload })
-    },
-    [player, room],
-  )
-
-  useEffect(() => {
     if (!room || !player || SPECTATING) return
+    let lastX = -1
+    let lastY = -1
     const move = (event: PointerEvent) => {
-      const state: CursorState = {
-        userId: player.user_id,
-        team: player.team,
-        slot: player.slot,
-        displayName: player.display_name,
-        x: Math.max(0, Math.min(1, event.clientX / window.innerWidth)),
-        y: Math.max(0, Math.min(1, event.clientY / window.innerHeight)),
-        down: currentDownRef.current,
-        ts: Date.now(),
-      }
-      localCursorRef.current = state
+      lastX = event.clientX
+      lastY = event.clientY
       // El cursor propio es el nativo del sistema; aquí solo se mueve la etiqueta, sin pasar por React.
       const label = ownLabelRef.current
       if (label) {
         label.style.transform = `translate3d(${event.clientX + OWN_LABEL_OFFSET.x}px, ${event.clientY + OWN_LABEL_OFFSET.y}px, 0)`
         label.style.opacity = '1'
       }
-      const now = performance.now()
-      if (now - lastCursorSentRef.current < 35) return
-      lastCursorSentRef.current = now
-      void cursorChannelRef.current?.send({ type: 'broadcast', event: 'cursor', payload: state })
+      senderRef.current?.sample(event.clientX, event.clientY, currentDownRef.current)
     }
-    const down = () => {
-      currentDownRef.current = true
-      shellRef.current?.classList.add('pointer-down')
-      void sendCursor(cursorChannelRef.current, true, true)
+    const setDown = (down: boolean, x: number, y: number) => {
+      currentDownRef.current = down
+      shellRef.current?.classList.toggle('pointer-down', down)
+      if (x >= 0) senderRef.current?.sample(x, y, down, true)
     }
-    const up = () => {
-      currentDownRef.current = false
-      shellRef.current?.classList.remove('pointer-down')
-      void sendCursor(cursorChannelRef.current, false, true)
+    const down = (event: PointerEvent) => setDown(true, event.clientX, event.clientY)
+    const up = (event: PointerEvent) => setDown(false, event.clientX, event.clientY)
+    const blur = () => {
+      if (currentDownRef.current) setDown(false, lastX, lastY)
     }
     const hideLabel = () => {
       if (ownLabelRef.current) ownLabelRef.current.style.opacity = '0'
@@ -563,16 +616,16 @@ function App() {
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerdown', down)
     window.addEventListener('pointerup', up)
-    window.addEventListener('blur', up)
+    window.addEventListener('blur', blur)
     document.documentElement.addEventListener('pointerleave', hideLabel)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerdown', down)
       window.removeEventListener('pointerup', up)
-      window.removeEventListener('blur', up)
+      window.removeEventListener('blur', blur)
       document.documentElement.removeEventListener('pointerleave', hideLabel)
     }
-  }, [room, player, sendCursor])
+  }, [room, player])
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault()
@@ -636,23 +689,29 @@ function App() {
   async function handleFlip(character: string) {
     if (!supabase || !room || !player || SPECTATING) return
     setError('')
-    // La ficha se mueve al instante; el tablero del servidor se aplica cuando no queda ningún clic en
-    // vuelo, para que una respuesta intermedia no devuelva a su sitio una ficha recién pulsada.
-    pendingFlipsRef.current += 1
-    setBoard((current) => current && {
-      ...current,
-      flipped: current.flipped.includes(character)
-        ? current.flipped.filter((name) => name !== character)
-        : [...current.flipped, character],
-    })
+    // La ficha se mueve al instante y se mantiene así mientras llega el tablero del servidor, para que
+    // una respuesta intermedia no devuelva a su sitio una ficha recién pulsada.
+    const down = !flipped.has(character)
+    const now = Date.now()
+    const override: FlipOverride = { down, applyAt: now, until: now + FLIP_HOLD_MS }
+    flipOverridesRef.current.set(character, override)
+    refreshFlips()
+    // Viaja con el cursor para que compañero y OBS la vean bajar justo cuando el cursor hace clic.
+    senderRef.current?.flip(character, down)
+    const boardEventsBefore = boardEventsRef.current
     try {
       const updated = await toggleCard(supabase, room.id, player.team, character)
-      if (updated) serverBoardRef.current = updated
+      if (updated) {
+        // Si la base de datos no ha mandado nada mientras tanto (o no llega), vale la respuesta.
+        if (boardEventsRef.current === boardEventsBefore) setServerBoard(updated)
+        sendBoardCount(roomChannelRef.current, { team: player.team, down: updated.flipped.length, at: updated.updated_at })
+      }
+      override.until = Math.max(override.until, Date.now() + 1200)
     } catch (caught) {
+      if (flipOverridesRef.current.get(character) === override) flipOverridesRef.current.delete(character)
       setError(errorText(caught))
     } finally {
-      pendingFlipsRef.current -= 1
-      if (pendingFlipsRef.current === 0 && serverBoardRef.current) setBoard(serverBoardRef.current)
+      refreshFlips()
     }
   }
 
@@ -662,8 +721,15 @@ function App() {
     try {
       const updated = await resetTeamBoard(supabase, room.id, player.team)
       if (updated) {
-        serverBoardRef.current = updated
-        setBoard(updated)
+        flipOverridesRef.current.clear()
+        setServerBoard(updated)
+        refreshFlips()
+        void teamChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'board',
+          payload: { flipped: updated.flipped, updated_at: updated.updated_at },
+        })
+        sendBoardCount(roomChannelRef.current, { team: player.team, down: updated.flipped.length, at: updated.updated_at })
       }
     } catch (caught) {
       setError(errorText(caught))
@@ -672,11 +738,8 @@ function App() {
     }
   }
 
-  async function handleSendChat(event: FormEvent) {
-    event.preventDefault()
-    const body = chatInput.trim()
+  async function handleSendChat(body: string) {
     if (!supabase || !room || !player || SPECTATING || !body) return
-    setChatInput('')
     const { error: insertError } = await supabase.from('messages').insert({
       room_id: room.id,
       team: player.team,
@@ -688,8 +751,8 @@ function App() {
   }
 
   async function handleCopyObsLink() {
-    if (!board?.spectator_key) return setError('El enlace OBS aún no está disponible. Revisa que la migración esté aplicada.')
-    const link = obsLink(board.spectator_key)
+    if (!serverBoard?.spectator_key) return setError('El enlace OBS aún no está disponible. Revisa que la migración esté aplicada.')
+    const link = obsLink(serverBoard.spectator_key)
     try {
       await navigator.clipboard.writeText(link)
       setNotice('Enlace OBS copiado. Pégalo como URL de una fuente de navegador.')
@@ -707,12 +770,9 @@ function App() {
     setLookup(null)
     setRoom(null)
     setPlayer(null)
-    setPlayers([])
-    setBoard(null)
+    setServerBoard(null)
     setMessages([])
     setSystemEntries([])
-    setOnlineIds(new Set())
-    setCursorStates({})
     setNotice('')
     const params = new URLSearchParams(window.location.search)
     params.delete('room')
@@ -720,15 +780,30 @@ function App() {
   }
 
   const setupWarning = characters.length < 24
-  const isOnline = (id: string) => id === player?.user_id || onlineIds.has(id)
-  const onlinePlayers = sortedPlayers.filter((candidate) => isOnline(candidate.user_id))
-  const onlineCount = onlinePlayers.length
   const chatEntries = useMemo(
     () =>
       [...messages.map((message): ChatEntry => ({ kind: 'chat', ...message })), ...systemEntries]
         .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)),
     [messages, systemEntries],
   )
+  const onlineSlots = useMemo(() => {
+    const slots = new Set<number>()
+    for (const meta of online.values()) slots.add(meta.slot)
+    if (player && !SPECTATING) slots.add(player.slot)
+    return slots
+  }, [online, player])
+  const remotePlayers = useMemo(() => {
+    const list = new Map<string, RemotePlayer>()
+    if (!player) return []
+    for (const meta of online.values()) {
+      if (meta.user_id === player.user_id || meta.team !== player.team || !meta.slot) continue
+      list.set(meta.user_id, { userId: meta.user_id, slot: meta.slot, name: meta.display_name })
+    }
+    for (const remote of Object.values(packetUsers)) {
+      if (remote.userId !== player.user_id && !list.has(remote.userId)) list.set(remote.userId, remote)
+    }
+    return [...list.values()]
+  }, [online, packetUsers, player])
 
   if (!isSupabaseConfigured) {
     return <SetupScreen />
@@ -758,9 +833,7 @@ function App() {
     )
   }
 
-  const remoteCursors = Object.values(cursorStates).filter(
-    (cursor) => cursor.userId !== player.user_id && cursor.team === player.team && isOnline(cursor.userId),
-  )
+  const onlineCount = online.size + (!SPECTATING && !online.has(player.user_id) ? 1 : 0)
   const ownCursorStyle = ownCursorImages
     ? ({ '--own-cursor': cursorCss(ownCursorImages.up), '--own-cursor-down': cursorCss(ownCursorImages.down) } as CSSProperties)
     : undefined
@@ -792,31 +865,23 @@ function App() {
           </button>
         </div>
         <div className="side-cams">
-          <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 1)} />
-          <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 2)} />
+          <CameraSlot occupied={onlineSlots.has(1)} />
+          <CameraSlot occupied={onlineSlots.has(2)} />
         </div>
       </aside>
 
       <div className="main-column">
         <div className="top-stage">
-          <TeamChat
-            team={player.team}
-            entries={chatEntries}
-            muted={chatMuted}
-            onToggleMute={() => setChatMuted((current) => !current)}
-            input={chatInput}
-            setInput={setChatInput}
-            onSubmit={handleSendChat}
-          />
+          <TeamChat team={player.team} entries={chatEntries} muted={chatMuted} onToggleMute={onToggleMute} onSend={onSendChat} />
           <OpponentBoard team={player.team === 1 ? 2 : 1} total={room.characters.length} down={opponentDown} />
           <div className="top-cams">
-            <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 3)} />
-            <CameraSlot player={onlinePlayers.find((candidate) => candidate.slot === 4)} />
+            <CameraSlot occupied={onlineSlots.has(3)} />
+            <CameraSlot occupied={onlineSlots.has(4)} />
           </div>
         </div>
 
         <main className="board-wrap">
-          <section className="board-grid" aria-label="Personajes">
+          <section className="board-grid" aria-label="Personajes" ref={setBoardElement}>
             {room.characters.map((character) => (
               <CharacterCard
                 key={character}
@@ -833,8 +898,15 @@ function App() {
       {error && <div className="toast error in-game">{error}</div>}
 
       <div className="cursor-layer" aria-hidden="true">
-        {remoteCursors.map((cursor) => (
-          <RemoteCursor key={cursor.userId} cursor={cursor} targets={cursorTargetsRef.current} />
+        {remotePlayers.map((remote) => (
+          <RemoteCursor
+            key={remote.userId}
+            receiver={cursorReceiver}
+            userId={remote.userId}
+            slot={remote.slot}
+            team={player.team}
+            name={remote.name}
+          />
         ))}
         <div ref={ownLabelRef} className={`own-cursor-label ${TEAM_COLORS[player.team]}`}>
           {player.display_name}
@@ -986,33 +1058,40 @@ function SetupScreen() {
   )
 }
 
-function CameraSlot({ player }: { player?: Player }) {
+// Con alguien conectado en el puesto el hueco queda vacío para la cámara real; si no, se avisa.
+const CameraSlot = memo(function CameraSlot({ occupied }: { occupied: boolean }) {
   return (
     <div className="camera-slot">
-      <div className="camera-placeholder">{player ? player.display_name : 'ESPERANDO JUGADOR'}</div>
+      {!occupied && <div className="camera-placeholder">ESPERANDO JUGADOR</div>}
     </div>
   )
-}
+})
 
-function TeamChat({
+// El texto que se escribe vive aquí: teclear no vuelve a pintar la sala entera.
+const TeamChat = memo(function TeamChat({
   team,
   entries,
   muted,
   onToggleMute,
-  input,
-  setInput,
-  onSubmit,
+  onSend,
 }: {
   team: Team
   entries: ChatEntry[]
   muted: boolean
   onToggleMute: () => void
-  input: string
-  setInput: (value: string) => void
-  onSubmit: (event: FormEvent) => void
+  onSend: (body: string) => void
 }) {
+  const [input, setInput] = useState('')
   const messagesRef = useRef<HTMLDivElement>(null)
   const hasChat = entries.some((entry) => entry.kind === 'chat')
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault()
+    const body = input.trim()
+    if (!body) return
+    setInput('')
+    onSend(body)
+  }
 
   useEffect(() => {
     const list = messagesRef.current
@@ -1059,7 +1138,7 @@ function TeamChat({
       </form>
     </section>
   )
-}
+})
 
 // Fondos del retrato: verdes, azules, morados, amarillos claros, rosas y marrones.
 const PORTRAIT_COLORS = [
@@ -1137,57 +1216,37 @@ const OpponentBoard = memo(function OpponentBoard({ team, total, down }: { team:
   )
 })
 
-// Suavizado de los cursores remotos: cuanto mayor, más suave pero con más retraso respecto al real.
-const CURSOR_SMOOTHING_MS = 45
-
-// Los mensajes llegan a saltos (cada ~35 ms y con la latencia irregular de la red). En vez de saltar a
-// cada posición, el cursor se acerca a la última recibida en cada fotograma, moviendo solo el transform.
-function RemoteCursor({ cursor, targets }: { cursor: CursorState; targets: Map<string, CursorState> }) {
+// El movimiento lo dibuja CursorReceiver fotograma a fotograma, sin pasar por React (ver cursors.ts).
+const RemoteCursor = memo(function RemoteCursor({
+  receiver,
+  userId,
+  slot,
+  team,
+  name,
+}: {
+  receiver: CursorReceiver
+  userId: string
+  slot: Slot
+  team: Team
+  name: string
+}) {
   const elementRef = useRef<HTMLDivElement>(null)
 
   // Layout effect: el primer fotograma ya sale en su sitio, sin pasar por la esquina superior izquierda.
   useLayoutEffect(() => {
     const element = elementRef.current
     if (!element) return
-    const start = targets.get(cursor.userId) ?? cursor
-    let x = start.x
-    let y = start.y
-    let last = performance.now()
-    let frame = 0
-    let drawn = ''
+    return receiver.attach(userId, element, CURSOR_ANCHORS[slot] ?? CURSOR_ANCHORS[1])
+  }, [receiver, userId, slot])
 
-    const tick = (now: number) => {
-      const target = targets.get(cursor.userId) ?? cursor
-      const blend = 1 - Math.exp(-(now - last) / CURSOR_SMOOTHING_MS)
-      last = now
-      x += (target.x - x) * blend
-      y += (target.y - y) * blend
-      const transform = `translate3d(${(x * window.innerWidth - 4).toFixed(1)}px, ${(y * window.innerHeight - 4).toFixed(1)}px, 0)`
-      if (transform !== drawn) {
-        element.style.transform = transform
-        drawn = transform
-      }
-      frame = window.requestAnimationFrame(tick)
-    }
-    tick(last)
-    return () => window.cancelAnimationFrame(frame)
-    // Solo depende del jugador: la posición se lee del ref en cada fotograma.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor.userId, targets])
-
+  // Las dos imágenes se cargan desde el principio: al hacer clic solo cambia cuál se ve.
   return (
-    <div ref={elementRef} className={`remote-cursor ${cursor.down ? 'down' : ''} ${TEAM_COLORS[cursor.team]}`}>
-      <img
-        src={getSlotCursorFile(cursor.slot, cursor.down)}
-        alt=""
-        onError={(event) => {
-          event.currentTarget.style.display = 'none'
-        }}
-      />
-      <div className="cursor-fallback">↖</div>
-      <span>{cursor.displayName}</span>
+    <div ref={elementRef} className={`remote-cursor ${TEAM_COLORS[team]}`}>
+      <img className="cursor-up" src={getSlotCursorFile(slot, false)} alt="" />
+      <img className="cursor-down" src={getSlotCursorFile(slot, true)} alt="" />
+      <span>{name}</span>
     </div>
   )
-}
+})
 
 export default App

@@ -359,8 +359,9 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 /* RemoteCursor mueve el transform en cada fotograma (interpolado): capa propia, sin relayout ni repintar el tablero. */
 .remote-cursor { position: fixed; left: 0; top: 0; width: 1px; height: 1px; will-change: transform; }
 .remote-cursor img { position: absolute; left: 0; top: 0; width: 58px; height: 58px; object-fit: contain; filter: drop-shadow(0 5px 10px rgba(0,0,0,.4)); }
-.cursor-fallback { position: absolute; left: 0; top: 0; font-size: 50px; line-height: 50px; text-shadow: 0 3px 12px rgba(0,0,0,.7); color: #fff; }
-.remote-cursor img + .cursor-fallback { opacity: .0; }
+/* data-down lo pone CursorReceiver al reproducir los clics del jugador. */
+.remote-cursor .cursor-down, .remote-cursor[data-down] .cursor-up { visibility: hidden; }
+.remote-cursor[data-down] .cursor-down { visibility: visible; }
 .remote-cursor span { position: absolute; left: 34px; top: 36px; white-space: nowrap; padding: 4px 6px; border-radius: 6px; font-size: 10px; font-weight: 900; background: rgba(0,0,0,.72); color: #fff; border: 1px solid rgba(255,255,255,.14); }
 .remote-cursor.blue span { border-left: 2px solid #2f9aff; }
 .remote-cursor.red span { border-left: 2px solid #ef5656; }
@@ -388,6 +389,9 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   pointer-events: none;
 }
 .obs-view .toolbar-actions, .obs-view .chat-form, .obs-view .mute-button, .obs-view .chat-empty { display: none; }
+/* Nadie hace scroll en OBS: sin barra; el chat sigue bajando solo al último mensaje. */
+.obs-view .chat-messages { overflow: hidden; scrollbar-width: none; }
+.obs-view .chat-messages::-webkit-scrollbar { display: none; }
 .obs-view .camera-slot { background: transparent; border-color: rgba(255,255,255,.25); }
 .obs-view .camera-slot::before { display: none; }
 .obs-view .camera-placeholder { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.9); }

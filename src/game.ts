@@ -117,10 +117,11 @@ export async function getTeamMessages(supabase: SupabaseClient, roomId: string, 
     .select('*')
     .eq('room_id', roomId)
     .eq('team', team)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(100)
   if (error) throw error
-  return (data ?? []) as ChatMessage[]
+  // Los 100 más recientes (no los 100 primeros), en orden cronológico.
+  return ((data ?? []) as ChatMessage[]).reverse()
 }
 
 export async function toggleCard(supabase: SupabaseClient, roomId: string, team: Team, character: string) {

@@ -36,14 +36,3 @@ export type ChatMessage = {
   body: string
   created_at: string
 }
-
-export type CursorState = {
-  userId: string
-  team: Team
-  slot: Slot
-  displayName: string
-  x: number
-  y: number
-  down: boolean
-  ts: number
-}
