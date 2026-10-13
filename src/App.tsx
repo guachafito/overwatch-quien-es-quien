@@ -1,11 +1,10 @@
 import { CSSProperties, FormEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js'
-import { ensureAnonymousSession, isSupabaseConfigured, supabase } from './supabase'
+import { ensureAnonymousSession, isSupabaseConfigured, leaveRoomOnUnload, supabase } from './supabase'
 import { CURSOR_HOTSPOT, CursorReceiver, CursorSender, setBoardElement } from './cursors'
 import type { CursorPacket } from './cursors'
 import {
   createRoom,
-  getBoardDownCounts,
   getPlayers,
   getRoomByCode,
   getTeamBoard,
@@ -14,11 +13,13 @@ import {
   joinTeam,
   leaveRoom as leaveRoomRpc,
   resetTeamBoard,
+  sendMessage,
   shuffle,
   spectateTeam,
+  syncRoom,
   toggleCard,
 } from './game'
-import type { RoomOccupant } from './game'
+import type { RoomOccupant, RosterPlayer } from './game'
 import type { ChatMessage, Player, Room, Slot, Team, TeamBoard } from './types'
 
 const TEAM_NAMES: Record<Team, string> = { 1: 'Equipo Azul', 2: 'Equipo Rojo' }
@@ -149,21 +150,44 @@ type ChatEntry =
   | ({ kind: 'chat' } & ChatMessage)
   | { kind: 'system'; id: string; variant: SystemVariant; text: string; created_at: string }
 
-// La presencia lleva el puesto y el equipo: las cámaras y los cursores no dependen de que llegue a
-// tiempo la lista de room_players (antes un jugador podía quedarse sin nombre ni cursor).
-type PresenceMeta = { user_id: string; display_name: string; team: Team; slot: Slot }
+// Recuento de fichas bajadas de un equipo; `v` es la versión del tablero para quedarse con el último.
+type BoardCount = { team: Team; down: number; v?: number }
 
-type BoardCount = { team: Team; down: number; at?: string }
+type BoardUpdate = { flipped: string[]; version?: number; reset?: boolean }
 
 type RemotePlayer = { userId: string; slot: Slot; name: string }
 
-// Ficha cambiada en local o por un compañero antes de que llegue el tablero de la base de datos.
+// Ficha cambiada en local o por un compañero antes de que llegue el tablero confirmado.
 // Hasta `applyAt` se ve como estaba; de ahí a `until` en el estado nuevo; después manda el servidor.
 type FlipOverride = { down: boolean; applyAt: number; until: number }
 const FLIP_HOLD_MS = 2500
 
-function sendBoardCount(channel: RealtimeChannel | null, count: BoardCount) {
-  void channel?.send({ type: 'broadcast', event: 'board-count', payload: count })
+// Latido (room_sync): marca al jugador como activo y trae jugadores, tablero y último mensaje.
+// La vista OBS solo lee, y si la sala está vacía consulta mucho menos (la presencia la avisa al entrar alguien).
+const SYNC_PLAYER_MS = 10_000
+const SYNC_OBS_MS = 15_000
+const SYNC_OBS_EMPTY_MS = 60_000
+
+// Puesto de esta pestaña, para volver a entrar solo al recargar (al cerrar o recargar se libera).
+const SEAT_KEY = 'oqeq-seat'
+type Seat = { code: string; team: Team; name: string }
+
+function readSeat(): Seat | null {
+  try {
+    const seat = JSON.parse(window.sessionStorage.getItem(SEAT_KEY) ?? 'null') as Seat | null
+    return seat?.code && (seat.team === 1 || seat.team === 2) ? seat : null
+  } catch {
+    return null
+  }
+}
+
+function saveSeat(seat: Seat | null) {
+  try {
+    if (seat) window.sessionStorage.setItem(SEAT_KEY, JSON.stringify(seat))
+    else window.sessionStorage.removeItem(SEAT_KEY)
+  } catch {
+    // Sin almacenamiento: al recargar habrá que volver a elegir equipo.
+  }
 }
 
 // supabase-js devuelve el canal que ya exista con ese nombre aunque se esté cerrando (al salir y volver
@@ -177,6 +201,13 @@ async function freshChannel(client: SupabaseClient, name: string, options: Param
 
 function systemEntry(variant: SystemVariant, text: string): ChatEntry {
   return { kind: 'system', id: `sys-${Date.now()}-${Math.random()}`, variant, text, created_at: new Date().toISOString() }
+}
+
+function sameRoster(a: RosterPlayer[], b: RosterPlayer[]) {
+  return a.length === b.length && a.every((player, index) => {
+    const other = b[index]
+    return player.user_id === other.user_id && player.slot === other.slot && player.team === other.team && player.display_name === other.display_name
+  })
 }
 
 const timeFormat = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -202,14 +233,14 @@ function App() {
   const flipOverridesRef = useRef(new Map<string, FlipOverride>())
   const flipTimerRef = useRef(0)
   const [flipTick, setFlipTick] = useState(0)
-  // Cambios de tablero recibidos de la base de datos (ver handleFlip).
-  const boardEventsRef = useRef(0)
   // Fichas bajadas por el equipo rival: solo el número, nunca cuáles.
   const [opponentDown, setOpponentDown] = useState(0)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const lastMessageIdRef = useRef(0)
   const [systemEntries, setSystemEntries] = useState<ChatEntry[]>([])
-  const [online, setOnline] = useState<Map<string, PresenceMeta>>(() => new Map())
-  // Compañeros de los que llegan cursores aunque su presencia no haya llegado.
+  // Jugadores activos según la base de datos: es lo que cuentan la barra superior y los cursores.
+  const [roster, setRoster] = useState<RosterPlayer[]>([])
+  // Compañeros de los que ya llegan cursores aunque aún no salgan en la lista (acaban de entrar).
   const [packetUsers, setPacketUsers] = useState<Record<string, RemotePlayer>>({})
   const [chatMuted, setChatMuted] = useState(readChatMuted)
   const chatMutedRef = useRef(chatMuted)
@@ -238,6 +269,11 @@ function App() {
   handleSendChatRef.current = handleSendChat
   const onSendChat = useCallback((body: string) => handleSendChatRef.current(body), [])
   const onToggleMute = useCallback(() => setChatMuted((current) => !current), [])
+  const rejoiningRef = useRef(false)
+  const rejoinRef = useRef(rejoin)
+  rejoinRef.current = rejoin
+
+  lastMessageIdRef.current = messages.length ? messages[messages.length - 1].id : 0
 
   // Quita los cambios caducados, programa el siguiente instante en que cambie alguno y repinta.
   const refreshFlips = useCallback(() => {
@@ -253,6 +289,30 @@ function App() {
     }
     if (next !== Infinity) flipTimerRef.current = window.setTimeout(refreshFlips, next - now + 1)
     setFlipTick((tick) => tick + 1)
+  }, [])
+
+  // Aplica un tablero llegue por donde llegue (respuesta propia, compañero o latido) si es más nuevo.
+  const applyServerBoard = useCallback((incoming: BoardUpdate) => {
+    setServerBoard((current) => {
+      if (!current) return current
+      if (incoming.version !== undefined && current.version !== undefined && incoming.version <= current.version) return current
+      return { ...current, flipped: incoming.flipped, version: incoming.version ?? current.version }
+    })
+  }, [])
+
+  // Une mensajes nuevos sin duplicar, en orden y quedándose con los 100 últimos.
+  const mergeMessages = useCallback((incoming: ChatMessage[]) => {
+    setMessages((current) => {
+      const byId = new Map(current.map((message) => [message.id, message]))
+      let changed = false
+      for (const message of incoming) {
+        if (byId.has(message.id)) continue
+        byId.set(message.id, message)
+        changed = true
+      }
+      if (!changed) return current
+      return [...byId.values()].sort((a, b) => a.id - b.id).slice(-100)
+    })
   }, [])
 
   const flipped = useMemo(() => {
@@ -288,6 +348,8 @@ function App() {
       await refreshRoomData(activeRoom, me)
       setRoom(activeRoom)
       setPlayer(me)
+      setRoster(players)
+      saveSeat({ code: activeRoom.code, team: me.team, name: me.display_name })
       const params = new URLSearchParams(window.location.search)
       params.set('room', activeRoom.code)
       window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`)
@@ -338,8 +400,8 @@ function App() {
     ;(async () => {
       try {
         const { room: watchedRoom, team } = await spectateTeam(client, OBS_KEY)
-        // El espectador reutiliza la vista de juego con un jugador ficticio que no está en room_players
-        // ni en la presencia, así que no ocupa cámara ni cuenta como jugador.
+        // El espectador reutiliza la vista de juego con un jugador ficticio que no está en room_players,
+        // así que no ocupa puesto ni cuenta como jugador.
         const viewer: Player = {
           room_id: watchedRoom.id,
           user_id: userId,
@@ -362,13 +424,21 @@ function App() {
     const codeFromUrl = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase()
     if (!codeFromUrl) return
     initializedRef.current = true
+    const client = supabase
 
     ;(async () => {
       try {
-        const existingRoom = await getRoomByCode(supabase, codeFromUrl)
-        if (!existingRoom) return
-        await enterRoom(existingRoom)
+        // Al recargar la pestaña el puesto se liberó: se vuelve a entrar en el mismo equipo con el mismo nick.
+        const seat = readSeat()
+        if (seat?.code === codeFromUrl) {
+          setName(seat.name)
+          await enterRoom(await joinTeam(client, seat.code, seat.team, seat.name))
+          return
+        }
+        const existingRoom = await getRoomByCode(client, codeFromUrl)
+        if (existingRoom) await enterRoom(existingRoom)
       } catch (caught) {
+        saveSeat(null)
         setError(errorText(caught))
       }
     })()
@@ -382,6 +452,7 @@ function App() {
     let roomChannel: RealtimeChannel | null = null
     let teamChannel: RealtimeChannel | null = null
     let sender: CursorSender | null = null
+    let opponentVersion = -1
 
     setSystemEntries(SPECTATING ? [] : [systemEntry('self', 'Has entrado en la sala')])
 
@@ -397,73 +468,112 @@ function App() {
       },
     }
 
-    // Presence marca quién está conectado de verdad: salir, cerrar la pestaña o perder la conexión lo quita.
-    let knownOnline = new Map<string, PresenceMeta>()
-    let firstSync = true
-    // Un corte breve de conexión saca y vuelve a meter al jugador en presence; solo se da por desconectado
-    // si sigue fuera pasado este margen, para no llenar el chat de salidas y entradas falsas.
-    const LEAVE_GRACE_MS = 6000
-    const pendingLeaves = new Map<string, number>()
-    let lastCountAt = ''
-    // Tras un corte se vuelven a leer tablero y chat por si se perdió algún cambio mientras tanto.
-    let needsResync = false
-
-    const onPresenceSync = (channel: RealtimeChannel) => {
-      const state = channel.presenceState<PresenceMeta>()
-      const current = new Map<string, PresenceMeta>()
-      for (const [key, metas] of Object.entries(state)) {
-        const meta = metas[metas.length - 1]
-        if (meta) current.set(key, meta)
+    const applyOpponentCount = (down: number, version?: number) => {
+      if (version !== undefined) {
+        if (version < opponentVersion) return
+        opponentVersion = version
       }
-
-      const entries: ChatEntry[] = []
-      for (const [id, meta] of current) {
-        // Vuelve dentro del margen de gracia: fue un corte, no una salida.
-        const pending = pendingLeaves.get(id)
-        if (pending !== undefined) {
-          window.clearTimeout(pending)
-          pendingLeaves.delete(id)
-          continue
-        }
-        if (id === player.user_id || knownOnline.has(id)) continue
-        entries.push(firstSync
-          ? systemEntry('info', `${meta.display_name} está en la sala`)
-          : systemEntry('join', `${meta.display_name} ha entrado en la sala`))
-      }
-      for (const [id, meta] of knownOnline) {
-        if (id === player.user_id || current.has(id) || pendingLeaves.has(id)) continue
-        pendingLeaves.set(id, window.setTimeout(() => {
-          pendingLeaves.delete(id)
-          if (!alive) return
-          knownOnline.delete(id)
-          receiver.forget(id)
-          setOnline(new Map(knownOnline))
-          setPacketUsers((users) => {
-            const rest = { ...users }
-            delete rest[id]
-            return rest
-          })
-          setSystemEntries((list) => [...list, systemEntry('leave', `${meta.display_name} ha salido de la sala`)])
-        }, LEAVE_GRACE_MS))
-      }
-
-      // Mientras dura el margen de gracia el jugador sigue contando como conectado.
-      for (const id of pendingLeaves.keys()) {
-        const meta = knownOnline.get(id)
-        if (meta && !current.has(id)) current.set(id, meta)
-      }
-      knownOnline = current
-      firstSync = false
-      setOnline(new Map(current))
-      if (entries.length) setSystemEntries((list) => [...list, ...entries])
+      setOpponentDown(down)
     }
 
+    // Lista de jugadores: los avisos de entrada y salida salen de comparar la lista anterior con la nueva.
+    let known: Map<string, RosterPlayer> | null = null
+    const applyRoster = (players: RosterPlayer[]) => {
+      const next = new Map(players.map((candidate) => [candidate.user_id, candidate]))
+      if (!SPECTATING) {
+        const entries: ChatEntry[] = []
+        for (const [id, candidate] of next) {
+          if (id === player.user_id || known?.has(id)) continue
+          entries.push(known
+            ? systemEntry('join', `${candidate.display_name} ha entrado en la sala`)
+            : systemEntry('info', `${candidate.display_name} está en la sala`))
+        }
+        for (const [id, candidate] of known ?? []) {
+          if (id !== player.user_id && !next.has(id)) entries.push(systemEntry('leave', `${candidate.display_name} ha salido de la sala`))
+        }
+        if (entries.length) setSystemEntries((list) => [...list, ...entries])
+      }
+      const departed = new Set([...(known?.keys() ?? [])].filter((id) => !next.has(id)))
+      for (const id of departed) receiver.forget(id)
+      known = next
+      setRoster((current) => (sameRoster(current, players) ? current : players))
+      // Quien ya está en la lista se dibuja por ella y quien se ha ido deja de dibujarse; el resto
+      // (acaba de entrar y aún no sale en la lista) se mantiene.
+      setPacketUsers((current) => {
+        const ids = Object.keys(current).filter((id) => next.has(id) || departed.has(id))
+        if (!ids.length) return current
+        const rest = { ...current }
+        for (const id of ids) delete rest[id]
+        return rest
+      })
+    }
+
+    let syncing = false
+    let syncAgain = false
+    let syncTimer = 0
+    let syncedPlayers = 0
+    const runSync = async () => {
+      if (syncing) {
+        syncAgain = true
+        return
+      }
+      syncing = true
+      window.clearTimeout(syncTimer)
+      try {
+        const state = await syncRoom(client, room.id)
+        if (!alive) return
+        if (!state.member) {
+          // Se le borró el puesto (más de 2 minutos sin latido): vuelve a entrar.
+          if (!SPECTATING) void rejoinRef.current()
+          return
+        }
+        syncedPlayers = state.players.length
+        applyRoster(state.players)
+        if (state.board) applyServerBoard(state.board)
+        const rival = state.down?.[String(player.team === 1 ? 2 : 1)]
+        if (rival) applyOpponentCount(rival.down, rival.v)
+        // Algún mensaje se perdió (p. ej. durante un corte): se vuelven a leer los últimos.
+        if (state.last_message_id && state.last_message_id > lastMessageIdRef.current) {
+          mergeMessages(await getTeamMessages(client, room.id, player.team))
+        }
+      } catch {
+        // Se reintenta en el siguiente latido.
+      } finally {
+        syncing = false
+        if (alive) {
+          if (syncAgain) {
+            syncAgain = false
+            void runSync()
+          } else {
+            const wait = !SPECTATING ? SYNC_PLAYER_MS : syncedPlayers ? SYNC_OBS_MS : SYNC_OBS_EMPTY_MS
+            syncTimer = window.setTimeout(runSync, wait)
+          }
+        }
+      }
+    }
+    // Varios avisos seguidos (presencia, broadcast) se juntan en una sola consulta.
+    const pendingSyncs = new Map<number, number>()
+    const syncSoon = (delay: number) => {
+      const at = Date.now() + delay
+      for (const other of pendingSyncs.values()) if (Math.abs(other - at) < 250) return
+      const timer = window.setTimeout(() => {
+        pendingSyncs.delete(timer)
+        void runSync()
+      }, delay)
+      pendingSyncs.set(timer, at)
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void runSync()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    void runSync()
+
     ;(async () => {
-      // Canal de sala (poco tráfico): cambios de la base de datos, presencia y recuento de fichas del rival.
+      // Canal de sala (poco tráfico): presencia (solo como aviso para sincronizar) y recuento del rival.
       const roomCh = await freshChannel(client, `room-${room.id}`, {
         config: { broadcast: { self: false }, presence: { key: player.user_id } },
       })
-      // Canal del equipo (cursores): el rival y su OBS no reciben estos mensajes, que son la mayoría.
+      // Canal del equipo: cursores, fichas y chat. El rival y su OBS no reciben estos mensajes.
       const teamCh = await freshChannel(client, `room-${room.id}-team-${player.team}`, {
         config: { broadcast: { self: false } },
       })
@@ -477,76 +587,49 @@ function App() {
       roomChannelRef.current = roomCh
       teamChannelRef.current = teamCh
 
+      let subscribedOnce = false
       roomCh
-        .on(
-          'postgres_changes',
-          { event: 'UPDATE', schema: 'public', table: 'team_boards', filter: `room_id=eq.${room.id}` },
-          (payload) => {
-            const incoming = payload.new as TeamBoard
-            if (incoming.team !== player.team) return
-            // Llegan en el orden en que se guardaron, así que el último siempre es el bueno.
-            boardEventsRef.current += 1
-            setServerBoard(incoming)
-          },
-        )
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${room.id}` },
-          (payload) => {
-            const incoming = payload.new as ChatMessage
-            if (incoming.team !== player.team) return
-            setMessages((current) => (current.some((message) => message.id === incoming.id) ? current : [...current, incoming]))
-            if (!SPECTATING && incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
-          },
-        )
         // Quien cambia una ficha anuncia el nuevo recuento de su equipo; el rival lo pinta en su mini-tablero.
         .on('broadcast', { event: 'board-count' }, ({ payload }) => {
           const count = payload as BoardCount
-          if (!count?.team || count.team === player.team) return
-          if (count.at && lastCountAt && count.at < lastCountAt) return
-          if (count.at) lastCountAt = count.at
-          setOpponentDown(count.down)
+          if (count?.team && count.team !== player.team) applyOpponentCount(count.down, count.v)
         })
-        .on('presence', { event: 'sync' }, () => onPresenceSync(roomCh))
+        // Alguien entra o sale: se consulta la lista enseguida. Al salir se repite por si su
+        // leave_room aún no había terminado.
+        .on('broadcast', { event: 'roster' }, () => syncSoon(150))
+        .on('presence', { event: 'join' }, () => syncSoon(300))
+        .on('presence', { event: 'leave' }, () => {
+          syncSoon(300)
+          syncSoon(2500)
+        })
         .subscribe((status) => {
-          if (!alive) return
-          if (status !== 'SUBSCRIBED') {
-            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') needsResync = true
-            return
-          }
-          if (needsResync) {
-            needsResync = false
-            refreshRoomData(room, player).catch(() => {
-              // Se reintentará en la próxima reconexión.
-            })
-          }
-          // El recuento del rival se lee de la base de datos al conectar; los cambios llegan por broadcast.
-          getBoardDownCounts(client, room.id)
-            .then((counts) => {
-              if (alive) setOpponentDown(counts[player.team === 1 ? 2 : 1])
-            })
-            .catch(() => {
-              // Sin la migración aplicada el mini-tablero se queda con todas las fichas subidas.
-            })
-          // El espectador solo escucha: sin track no cuenta como conectado ni ocupa cámara.
+          if (!alive || status !== 'SUBSCRIBED') return
+          // Tras un corte se vuelve a sincronizar por si se perdió algo mientras tanto.
+          if (subscribedOnce) void runSync()
+          subscribedOnce = true
+          // El espectador solo escucha: no cuenta como conectado.
           if (SPECTATING) return
-          void roomCh.track({
-            user_id: player.user_id,
-            display_name: player.display_name,
-            team: player.team,
-            slot: player.slot,
-          } satisfies PresenceMeta)
+          void roomCh.track({ user_id: player.user_id })
+          void roomCh.send({ type: 'broadcast', event: 'roster', payload: {} })
         })
 
       teamCh
         .on('broadcast', { event: 'cursor' }, ({ payload }) => receiver.receive(payload as CursorPacket))
-        // Reinicio del tablero: se aplica al momento, sin esperar a la base de datos.
         .on('broadcast', { event: 'board' }, ({ payload }) => {
-          const incoming = payload as Pick<TeamBoard, 'flipped' | 'updated_at'>
+          const incoming = payload as BoardUpdate
           if (!Array.isArray(incoming?.flipped)) return
-          flipOverridesRef.current.clear()
-          setServerBoard((current) => current && { ...current, flipped: incoming.flipped, updated_at: incoming.updated_at })
-          refreshFlips()
+          // Reinicio: se descartan los cambios en vuelo y se aplica al momento.
+          if (incoming.reset) {
+            flipOverridesRef.current.clear()
+            refreshFlips()
+          }
+          applyServerBoard(incoming)
+        })
+        .on('broadcast', { event: 'chat' }, ({ payload }) => {
+          const incoming = payload as ChatMessage
+          if (!incoming?.id || incoming.team !== player.team) return
+          mergeMessages([incoming])
+          if (!SPECTATING && incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
         })
         .subscribe((status) => {
           if (alive && status === 'SUBSCRIBED') sender?.resend()
@@ -566,11 +649,13 @@ function App() {
 
     return () => {
       alive = false
+      document.removeEventListener('visibilitychange', onVisible)
+      window.clearTimeout(syncTimer)
+      for (const timer of pendingSyncs.keys()) window.clearTimeout(timer)
       sender?.dispose()
       senderRef.current = null
       receiver.handlers = {}
       receiver.reset()
-      for (const timer of pendingLeaves.values()) window.clearTimeout(timer)
       window.clearTimeout(flipTimerRef.current)
       flipOverridesRef.current.clear()
       if (roomChannel) void client.removeChannel(roomChannel)
@@ -578,12 +663,27 @@ function App() {
       roomChannelRef.current = null
       teamChannelRef.current = null
       setOpponentDown(0)
-      setOnline(new Map())
       setPacketUsers({})
     }
     // The callback is intentionally kept stable through refs/state below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, player])
+
+  // Cerrar o recargar la pestaña cuenta como salir de la sala: se libera el puesto al momento.
+  useEffect(() => {
+    if (!room || SPECTATING) return
+    const onPageHide = () => leaveRoomOnUnload(room.id)
+    // Si el navegador restaura la página de su caché tras haberla dejado, se recarga para volver a entrar.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) window.location.reload()
+    }
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
+    }
+  }, [room])
 
   useEffect(() => {
     if (!room || !player || SPECTATING) return
@@ -686,10 +786,24 @@ function App() {
     }
   }
 
+  // El puesto se perdió por inactividad (p. ej. el equipo estuvo suspendido): se vuelve a pedir.
+  async function rejoin() {
+    if (!supabase || !room || !player || SPECTATING || rejoiningRef.current) return
+    rejoiningRef.current = true
+    try {
+      await enterRoom(await joinTeam(supabase, room.code, player.team, player.display_name))
+    } catch (caught) {
+      leaveRoom()
+      setError(`Has perdido tu puesto en la sala: ${errorText(caught)}`)
+    } finally {
+      rejoiningRef.current = false
+    }
+  }
+
   async function handleFlip(character: string) {
     if (!supabase || !room || !player || SPECTATING) return
     setError('')
-    // La ficha se mueve al instante y se mantiene así mientras llega el tablero del servidor, para que
+    // La ficha se mueve al instante y se mantiene así mientras llega el tablero confirmado, para que
     // una respuesta intermedia no devuelva a su sitio una ficha recién pulsada.
     const down = !flipped.has(character)
     const now = Date.now()
@@ -698,13 +812,17 @@ function App() {
     refreshFlips()
     // Viaja con el cursor para que compañero y OBS la vean bajar justo cuando el cursor hace clic.
     senderRef.current?.flip(character, down)
-    const boardEventsBefore = boardEventsRef.current
     try {
       const updated = await toggleCard(supabase, room.id, player.team, character)
       if (updated) {
-        // Si la base de datos no ha mandado nada mientras tanto (o no llega), vale la respuesta.
-        if (boardEventsRef.current === boardEventsBefore) setServerBoard(updated)
-        sendBoardCount(roomChannelRef.current, { team: player.team, down: updated.flipped.length, at: updated.updated_at })
+        const board: BoardUpdate = { flipped: updated.flipped, version: updated.version }
+        applyServerBoard(board)
+        void teamChannelRef.current?.send({ type: 'broadcast', event: 'board', payload: board })
+        void roomChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'board-count',
+          payload: { team: player.team, down: updated.flipped.length, v: updated.version } satisfies BoardCount,
+        })
       }
       override.until = Math.max(override.until, Date.now() + 1200)
     } catch (caught) {
@@ -721,15 +839,16 @@ function App() {
     try {
       const updated = await resetTeamBoard(supabase, room.id, player.team)
       if (updated) {
+        const board: BoardUpdate = { flipped: updated.flipped, version: updated.version, reset: true }
         flipOverridesRef.current.clear()
-        setServerBoard(updated)
         refreshFlips()
-        void teamChannelRef.current?.send({
+        applyServerBoard(board)
+        void teamChannelRef.current?.send({ type: 'broadcast', event: 'board', payload: board })
+        void roomChannelRef.current?.send({
           type: 'broadcast',
-          event: 'board',
-          payload: { flipped: updated.flipped, updated_at: updated.updated_at },
+          event: 'board-count',
+          payload: { team: player.team, down: updated.flipped.length, v: updated.version } satisfies BoardCount,
         })
-        sendBoardCount(roomChannelRef.current, { team: player.team, down: updated.flipped.length, at: updated.updated_at })
       }
     } catch (caught) {
       setError(errorText(caught))
@@ -740,14 +859,19 @@ function App() {
 
   async function handleSendChat(body: string) {
     if (!supabase || !room || !player || SPECTATING || !body) return
-    const { error: insertError } = await supabase.from('messages').insert({
-      room_id: room.id,
-      team: player.team,
-      user_id: player.user_id,
-      display_name: player.display_name,
-      body: body.slice(0, 280),
-    })
-    if (insertError) setError(errorText(insertError))
+    try {
+      const sent = await sendMessage(supabase, {
+        room_id: room.id,
+        team: player.team,
+        user_id: player.user_id,
+        display_name: player.display_name,
+        body: body.slice(0, 280),
+      })
+      mergeMessages([sent])
+      void teamChannelRef.current?.send({ type: 'broadcast', event: 'chat', payload: sent })
+    } catch (caught) {
+      setError(errorText(caught))
+    }
   }
 
   async function handleCopyObsLink() {
@@ -763,10 +887,18 @@ function App() {
 
   function leaveRoom() {
     if (supabase && room) {
-      // Libera el puesto para poder volver a entrar en cualquier equipo.
-      pendingLeaveRef.current = leaveRoomRpc(supabase, room.id).catch((caught) => setError(errorText(caught)))
+      // Libera el puesto para poder volver a entrar en cualquier equipo. Cuando ya está libre se avisa a
+      // la sala (por HTTP: el canal ya se habrá cerrado) para que todos actualicen la lista al momento.
+      const channel = roomChannelRef.current
+      pendingLeaveRef.current = leaveRoomRpc(supabase, room.id)
+        .then(() => {
+          void channel?.httpSend('roster', {}).catch(() => {})
+        })
+        .catch((caught) => setError(errorText(caught)))
       setJoinCode(room.code)
     }
+    saveSeat(null)
+    setRoster([])
     setLookup(null)
     setRoom(null)
     setPlayer(null)
@@ -786,24 +918,18 @@ function App() {
         .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)),
     [messages, systemEntries],
   )
-  const onlineSlots = useMemo(() => {
-    const slots = new Set<number>()
-    for (const meta of online.values()) slots.add(meta.slot)
-    if (player && !SPECTATING) slots.add(player.slot)
-    return slots
-  }, [online, player])
   const remotePlayers = useMemo(() => {
     const list = new Map<string, RemotePlayer>()
     if (!player) return []
-    for (const meta of online.values()) {
-      if (meta.user_id === player.user_id || meta.team !== player.team || !meta.slot) continue
-      list.set(meta.user_id, { userId: meta.user_id, slot: meta.slot, name: meta.display_name })
+    for (const candidate of roster) {
+      if (candidate.user_id === player.user_id || candidate.team !== player.team) continue
+      list.set(candidate.user_id, { userId: candidate.user_id, slot: candidate.slot, name: candidate.display_name })
     }
     for (const remote of Object.values(packetUsers)) {
       if (remote.userId !== player.user_id && !list.has(remote.userId)) list.set(remote.userId, remote)
     }
     return [...list.values()]
-  }, [online, packetUsers, player])
+  }, [roster, packetUsers, player])
 
   if (!isSupabaseConfigured) {
     return <SetupScreen />
@@ -833,7 +959,7 @@ function App() {
     )
   }
 
-  const onlineCount = online.size + (!SPECTATING && !online.has(player.user_id) ? 1 : 0)
+  const onlineCount = Math.min(4, roster.length)
   const ownCursorStyle = ownCursorImages
     ? ({ '--own-cursor': cursorCss(ownCursorImages.up), '--own-cursor-down': cursorCss(ownCursorImages.down) } as CSSProperties)
     : undefined
@@ -865,8 +991,8 @@ function App() {
           </button>
         </div>
         <div className="side-cams">
-          <CameraSlot occupied={onlineSlots.has(1)} />
-          <CameraSlot occupied={onlineSlots.has(2)} />
+          <div className="camera-slot" />
+          <div className="camera-slot" />
         </div>
       </aside>
 
@@ -875,8 +1001,8 @@ function App() {
           <TeamChat team={player.team} entries={chatEntries} muted={chatMuted} onToggleMute={onToggleMute} onSend={onSendChat} />
           <OpponentBoard team={player.team === 1 ? 2 : 1} total={room.characters.length} down={opponentDown} />
           <div className="top-cams">
-            <CameraSlot occupied={onlineSlots.has(3)} />
-            <CameraSlot occupied={onlineSlots.has(4)} />
+            <div className="camera-slot" />
+            <div className="camera-slot" />
           </div>
         </div>
 
@@ -1057,15 +1183,6 @@ function SetupScreen() {
     </div>
   )
 }
-
-// Con alguien conectado en el puesto el hueco queda vacío para la cámara real; si no, se avisa.
-const CameraSlot = memo(function CameraSlot({ occupied }: { occupied: boolean }) {
-  return (
-    <div className="camera-slot">
-      {!occupied && <div className="camera-placeholder">ESPERANDO JUGADOR</div>}
-    </div>
-  )
-})
 
 // El texto que se escribe vive aquí: teclear no vuelve a pintar la sala entera.
 const TeamChat = memo(function TeamChat({

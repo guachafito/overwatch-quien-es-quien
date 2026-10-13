@@ -15,6 +15,28 @@ export const supabase = isSupabaseConfigured
     })
   : null
 
+// Último token de sesión, legible de forma síncrona al cerrar la pestaña (ver leaveRoomOnUnload).
+let accessToken = ''
+supabase?.auth.onAuthStateChange((_event, session) => {
+  accessToken = session?.access_token ?? ''
+})
+
+// Al cerrar o recargar la pestaña no da tiempo a esperar a supabase-js: se libera el puesto con una
+// petición keepalive, que el navegador termina de enviar aunque la página ya se haya cerrado.
+export function leaveRoomOnUnload(roomId: string) {
+  if (!url || !key || !accessToken) return
+  try {
+    void fetch(`${url}/rest/v1/rpc/leave_room`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { apikey: key, Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_room_id: roomId }),
+    })
+  } catch {
+    // Si no sale, el puesto se libera solo al dejar de recibir latidos (room_sync).
+  }
+}
+
 export async function ensureAnonymousSession() {
   if (!supabase) throw new Error('Supabase no está configurado.')
 

@@ -181,7 +181,6 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   position: absolute; inset: 0;
   background: linear-gradient(135deg, rgba(255,255,255,.06), transparent 48%);
 }
-.camera-placeholder { position: absolute; inset: auto 12px 14px; text-align: center; color: #8ea9be; font-size: 10px; letter-spacing: .1em; font-weight: 900; }
 
 .team-chat { min-width: 0; height: 100%; border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,.16); background: rgba(3, 13, 24, .96); display: grid; grid-template-rows: auto 1fr auto; }
 .team-chat.blue { box-shadow: 0 0 0 1px rgba(53, 150, 244, .06), 0 18px 45px rgba(7, 73, 125, .14); }
@@ -394,7 +393,6 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .obs-view .chat-messages::-webkit-scrollbar { display: none; }
 .obs-view .camera-slot { background: transparent; border-color: rgba(255,255,255,.25); }
 .obs-view .camera-slot::before { display: none; }
-.obs-view .camera-placeholder { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.9); }
 .obs-status { min-height: 100vh; display: grid; place-items: center; color: #dceef9; font-weight: 900; text-shadow: 0 1px 4px rgba(0,0,0,.9); }
 
 .setup-instructions { max-width: 760px; margin: 0 auto; line-height: 1.7; color: #a9bdcf; }

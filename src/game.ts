@@ -162,3 +162,32 @@ export async function getBoardDownCounts(supabase: SupabaseClient, roomId: strin
   for (const row of (data ?? []) as { team: Team; down: number }[]) counts[row.team] = row.down
   return counts
 }
+
+export type RosterPlayer = { user_id: string; team: Team; slot: Slot; display_name: string }
+
+export type RoomSync =
+  | { member: false }
+  | {
+      member: true
+      players: RosterPlayer[]
+      board: { flipped: string[]; version: number } | null
+      last_message_id: number | null
+      // Fichas bajadas por equipo ("1" / "2") con la versión de su tablero.
+      down?: Record<string, { down: number; v: number }>
+    }
+
+// Latido + estado de la sala en una sola consulta (ver migración active_players).
+export async function syncRoom(supabase: SupabaseClient, roomId: string) {
+  const { data, error } = await supabase.rpc('room_sync', { p_room_id: roomId })
+  if (error) throw error
+  return data as RoomSync
+}
+
+export async function sendMessage(
+  supabase: SupabaseClient,
+  message: Pick<ChatMessage, 'room_id' | 'team' | 'user_id' | 'display_name' | 'body'>,
+) {
+  const { data, error } = await supabase.from('messages').insert(message).select().single()
+  if (error) throw error
+  return data as ChatMessage
+}

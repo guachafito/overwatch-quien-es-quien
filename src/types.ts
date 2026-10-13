@@ -24,6 +24,8 @@ export type TeamBoard = {
   team: Team
   flipped: string[]
   spectator_key?: string
+  // Sube en cada cambio; sirve para quedarse siempre con el tablero más reciente.
+  version?: number
   updated_at: string
 }
 
