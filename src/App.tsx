@@ -167,6 +167,14 @@ type BoardUpdate = { flipped: string[]; version?: number; reset?: boolean }
 
 type RemotePlayer = { userId: string; slot: Slot; name: string }
 
+// Héroe marcado en la ventana de elegir personaje antes de confirmarlo. Es uno por equipo: viaja por el
+// canal del equipo y gana el de `at` más alto (y `by` para desempatar), así los dos acaban con el mismo.
+type TeamPick = { character: string; at: number; by: string; name: string }
+
+function isNewerPick(incoming: TeamPick, current: TeamPick | null) {
+  return !current || incoming.at > current.at || (incoming.at === current.at && incoming.by > current.by)
+}
+
 // Ficha cambiada en local o por un compañero antes de que llegue el tablero confirmado.
 // Hasta `applyAt` se ve como estaba; de ahí a `until` en el estado nuevo; después manda el servidor.
 type FlipOverride = { down: boolean; applyAt: number; until: number }
@@ -254,6 +262,9 @@ function App() {
   const [packetUsers, setPacketUsers] = useState<Record<string, RemotePlayer>>({})
   const [chatMuted, setChatMuted] = useState(readChatMuted)
   const chatMutedRef = useRef(chatMuted)
+  const [teamPick, setTeamPick] = useState<TeamPick | null>(null)
+  const teamPickRef = useRef(teamPick)
+  teamPickRef.current = teamPick
   const [name, setName] = useState('')
   const [joinCode, setJoinCode] = useState(new URLSearchParams(window.location.search).get('room') ?? '')
   // Puestos ocupados de la sala buscada; null mientras no se haya encontrado ninguna.
@@ -315,6 +326,11 @@ function App() {
   const applyCharacter = useCallback((character: string | null | undefined) => {
     if (!character) return
     setServerBoard((current) => (current && current.character !== character ? { ...current, character } : current))
+  }, [])
+
+  const applyPick = useCallback((incoming: TeamPick | null | undefined) => {
+    if (!incoming?.character) return
+    setTeamPick((current) => (isNewerPick(incoming, current) ? incoming : current))
   }, [])
 
   // Une mensajes nuevos sin duplicar, en orden y quedándose con los 100 últimos.
@@ -646,6 +662,12 @@ function App() {
         .on('broadcast', { event: 'character' }, ({ payload }) => {
           applyCharacter((payload as { character?: string } | null)?.character)
         })
+        .on('broadcast', { event: 'pick' }, ({ payload }) => applyPick(payload as TeamPick))
+        // Quien acaba de conectarse (compañero u OBS) pregunta qué héroe está marcado.
+        .on('broadcast', { event: 'pick-sync' }, () => {
+          const pick = teamPickRef.current
+          if (pick && !SPECTATING) void teamCh.send({ type: 'broadcast', event: 'pick', payload: pick })
+        })
         .on('broadcast', { event: 'chat' }, ({ payload }) => {
           const incoming = payload as ChatMessage
           if (!incoming?.id || incoming.team !== player.team) return
@@ -653,7 +675,9 @@ function App() {
           if (!SPECTATING && incoming.user_id !== player.user_id && !chatMutedRef.current) playChatSound()
         })
         .subscribe((status) => {
-          if (alive && status === 'SUBSCRIBED') sender?.resend()
+          if (!alive || status !== 'SUBSCRIBED') return
+          sender?.resend()
+          void teamCh.send({ type: 'broadcast', event: 'pick-sync', payload: {} })
         })
 
       if (!SPECTATING) {
@@ -685,6 +709,7 @@ function App() {
       teamChannelRef.current = null
       setOpponentDown(0)
       setPacketUsers({})
+      setTeamPick(null)
     }
     // The callback is intentionally kept stable through refs/state below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -911,6 +936,15 @@ function App() {
     }
   }
 
+  // Marca un héroe para todo el equipo. `at` siempre supera al marcado actual aunque los relojes difieran.
+  function handlePick(character: string) {
+    if (!player || SPECTATING) return
+    const at = Math.max(Date.now(), (teamPickRef.current?.at ?? 0) + 1)
+    const pick: TeamPick = { character, at, by: player.user_id, name: player.display_name }
+    applyPick(pick)
+    void teamChannelRef.current?.send({ type: 'broadcast', event: 'pick', payload: pick })
+  }
+
   async function handleChooseCharacter(character: string) {
     if (!supabase || !room || !player || SPECTATING) return
     setBusy(true)
@@ -1086,11 +1120,15 @@ function App() {
           </main>
         </div>
 
-        {!SPECTATING && serverBoard && !serverBoard.character && (
+        {serverBoard && !serverBoard.character && (
           <CharacterPicker
             team={player.team}
             characters={room.characters}
+            pick={teamPick}
+            ownId={player.user_id}
+            readOnly={SPECTATING}
             busy={busy}
+            onPick={handlePick}
             onChoose={handleChooseCharacter}
             onLeave={leaveRoom}
           />
@@ -1382,22 +1420,31 @@ function TeamCharacterBadge({ character }: { character: string | null }) {
   )
 }
 
-// Ventana para elegir el personaje del equipo. Sale a quien entra mientras su equipo no tenga uno; en
-// cuanto uno de los dos lo confirma se cierra también para el compañero.
+// Ventana para elegir el personaje del equipo. Sale mientras el equipo no tenga uno (también en la vista
+// OBS, solo para mirar). El héroe marcado es el mismo para los dos compañeros, y en cuanto uno confirma
+// se cierra para todos.
 function CharacterPicker({
   team,
   characters,
+  pick,
+  ownId,
+  readOnly,
   busy,
+  onPick,
   onChoose,
   onLeave,
 }: {
   team: Team
   characters: string[]
+  pick: TeamPick | null
+  ownId: string
+  readOnly: boolean
   busy: boolean
+  onPick: (character: string) => void
   onChoose: (character: string) => void
   onLeave: () => void
 }) {
-  const [selected, setSelected] = useState<string | null>(null)
+  const selected = pick?.character ?? null
   const rival = TEAM_NAMES[team === 1 ? 2 : 1]
 
   return (
@@ -1415,7 +1462,8 @@ function CharacterPicker({
               type="button"
               key={character}
               className={`character-card picker-card ${selected === character ? 'is-selected' : ''}`}
-              onClick={() => setSelected(character)}
+              onClick={() => onPick(character)}
+              disabled={readOnly}
               aria-pressed={selected === character}
               style={cardStyle(character)}
             >
@@ -1425,14 +1473,23 @@ function CharacterPicker({
         </div>
         <div className="picker-actions">
           <span className="picker-selection">
-            {selected ? <>Elegido: <strong>{selected}</strong></> : 'Pulsa un héroe para elegirlo.'}
+            {pick ? (
+              <>
+                Elegido: <strong>{pick.character}</strong>
+                {pick.by !== ownId && <> · lo ha marcado {pick.name}</>}
+              </>
+            ) : readOnly ? 'Esperando a que el equipo elija…' : 'Pulsa un héroe para elegirlo.'}
           </span>
-          <button type="button" className="danger-button" onClick={onLeave}>
-            Salir
-          </button>
-          <button type="button" className="picker-confirm" disabled={!selected || busy} onClick={() => selected && onChoose(selected)}>
-            Confirmar personaje
-          </button>
+          {!readOnly && (
+            <>
+              <button type="button" className="danger-button" onClick={onLeave}>
+                Salir
+              </button>
+              <button type="button" className="picker-confirm" disabled={!selected || busy} onClick={() => selected && onChoose(selected)}>
+                Confirmar personaje
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

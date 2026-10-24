@@ -313,7 +313,7 @@ body:has(.game-shell) { min-width: 0; overflow: hidden; }
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: var(--board-gap);
-  align-items: center;
+  align-items: normal;
   width: min(100%, calc((100cqh - 2 * var(--board-gap)) / 3 * 8 / 9 * 8 + 7 * var(--board-gap)));
   margin: 0 auto;
 }
