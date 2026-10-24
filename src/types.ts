@@ -26,6 +26,8 @@ export type TeamBoard = {
   spectator_key?: string
   // Sube en cada cambio; sirve para quedarse siempre con el tablero más reciente.
   version?: number
+  // Héroe que el rival tiene que adivinar; null hasta que el equipo lo elige.
+  character?: string | null
   updated_at: string
 }
 

@@ -132,75 +132,126 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .architecture-card p { grid-column: 1 / -1; margin: -4px 0 0; color: var(--muted); }
 
 /*
- * Sala: columna lateral (cabecera, acciones y dos cámaras grandes) + columna principal
- * (chat y dos cámaras pequeñas arriba, tablero 8×3 debajo). El equipo rojo la ve en espejo.
- * Los tamaños se derivan de la ventana para que las cámaras mantengan 8:9 sin scroll.
+ * Sala: lienzo fijo de 1920×1080 (.stage) que App escala entero a la ventana, con bandas si no es 16:9.
+ * Izquierda: columna de 480 px con las dos cámaras del equipo (480×540, 8:9; juntas forman 16:9).
+ * Derecha (1440×1080): chat + cámaras del rival arriba (300 px), franja de fichas del rival y tablero.
+ * El equipo rojo lo ve en espejo, con la columna de cámaras a la derecha.
  */
+body:has(.game-shell) { min-width: 0; overflow: hidden; }
 .game-shell {
-  --pad: 12px;
-  --gap: 12px;
-  --head-h: 52px;
-  --actions-h: 44px;
+  --team: #268fff;
+  --rival: #f05656;
+  --rival-light: #ff9a9a;
   --board-gap: 10px;
-  --cam-big-h: calc((100vh - 2 * var(--pad) - var(--head-h) - var(--actions-h) - 3 * var(--gap)) / 2);
-  --side-w: calc(var(--cam-big-h) * 8 / 9);
-  --main-w: calc(100vw - 2 * var(--pad) - var(--side-w) - var(--gap));
-  --card-w: calc((var(--main-w) - 7 * var(--board-gap)) / 8);
-  --top-h: clamp(150px, calc(100vh - 2 * var(--pad) - var(--gap) - 3 * var(--card-w) * 9 / 8 - 2 * var(--board-gap)), 32vh);
-  height: 100vh;
+  position: fixed;
+  inset: 0;
   overflow: hidden;
+  background: #02070d;
+}
+.game-shell.red { --team: #f05656; --rival: #268fff; --rival-light: #8dcfff; }
+
+.stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  transform-origin: 0 0;
   display: flex;
-  gap: var(--gap);
-  padding: var(--pad);
-}
-.game-shell.red { flex-direction: row-reverse; }
-
-.side-column { flex: none; width: var(--side-w); min-height: 0; display: flex; flex-direction: column; gap: var(--gap); }
-.side-cams { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--gap); }
-.side-cams .camera-slot { width: 100%; height: auto; }
-
-.main-column { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--gap); }
-.top-stage { flex: none; height: var(--top-h); display: flex; gap: var(--gap); }
-.game-shell.red .top-stage { flex-direction: row-reverse; }
-/* El chat y el mini-tablero del rival se reparten a partes iguales el hueco que dejan las cámaras. */
-.top-stage .team-chat, .top-stage .opponent-board { flex: 1 1 0; }
-.top-cams { flex: none; height: 100%; display: flex; gap: var(--gap); }
-
-.camera-slot {
-  position: relative;
-  flex: none;
-  aspect-ratio: 8 / 9;
-  height: 100%;
-  background: linear-gradient(140deg, #162a3e, #08131f);
-  border: 1px solid rgba(255,255,255,.13);
-  border-radius: 16px;
   overflow: hidden;
+  background:
+    radial-gradient(circle at 15% 0%, rgba(35, 143, 240, .24), transparent 34%),
+    radial-gradient(circle at 82% 12%, rgba(238, 77, 77, .16), transparent 28%),
+    linear-gradient(180deg, #092341 0%, #05101d 100%);
 }
-.camera-slot::before {
-  content: '';
-  position: absolute; inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,.06), transparent 48%);
+.game-shell.red .stage { flex-direction: row-reverse; }
+
+/* Huecos de cámara: solo el recuadro (las cámaras reales se colocan en OBS), sin ningún texto encima. */
+.camera-slot {
+  flex: none;
+  background: linear-gradient(140deg, #162a3e, #08131f);
+}
+.team-cams { flex: none; width: 480px; height: 1080px; display: flex; flex-direction: column; }
+.team-cams .camera-slot { width: 480px; height: 540px; box-shadow: inset 0 0 0 3px var(--team); }
+
+.stage-main { flex: none; width: 1440px; height: 1080px; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.top-row { flex: none; height: 300px; display: flex; gap: 14px; }
+.game-shell.red .top-row { flex-direction: row-reverse; }
+.rival-cams { flex: none; display: flex; gap: 14px; }
+.rival-cams .camera-slot { width: 267px; height: 300px; border-radius: 12px; box-shadow: inset 0 0 0 3px var(--rival); }
+
+.chat-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(3, 13, 24, .96);
+  box-shadow: 0 18px 45px rgba(0,0,0,.18);
 }
 
-.team-chat { min-width: 0; height: 100%; border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,.16); background: rgba(3, 13, 24, .96); display: grid; grid-template-rows: auto 1fr auto; }
-.team-chat.blue { box-shadow: 0 0 0 1px rgba(53, 150, 244, .06), 0 18px 45px rgba(7, 73, 125, .14); }
-.team-chat.red { box-shadow: 0 0 0 1px rgba(244, 83, 83, .06), 0 18px 45px rgba(125, 20, 20, .12); }
-.chat-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; font-size: 10px; font-weight: 900; letter-spacing: .08em; border-bottom: 1px solid rgba(255,255,255,.08); }
-.team-chat.blue .chat-header { background: #0e4b8c; }
-.team-chat.red .chat-header { background: #8c2424; }
-.mute-button { padding: 2px 6px; border-radius: 6px; background: rgba(0,0,0,.2); font-size: 13px; line-height: 1.2; cursor: pointer; }
-.mute-button:hover { background: rgba(0,0,0,.35); }
+.game-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  min-width: 0;
+  background: rgba(5, 17, 30, .94);
+  box-shadow: inset 0 2px 0 var(--team);
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.game-toolbar h1 { flex: none; margin: 0; font-size: 18px; font-weight: 900; line-height: 1.1; white-space: nowrap; }
+.toolbar-meta { flex: none; color: #92a9bc; font-size: 12px; white-space: nowrap; }
+.toolbar-meta strong { color: #eef8ff; letter-spacing: .12em; }
+
+.character-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px 0 3px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,210,0,.5);
+  background: rgba(255,210,0,.12);
+}
+.character-badge.is-empty { padding-left: 10px; }
+.character-badge-portrait {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid #FFD200;
+  overflow: hidden;
+  background: var(--portrait-bg, #173b5f);
+}
+.character-badge-portrait img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.character-badge-text { min-width: 0; font-size: 11px; font-weight: 900; color: #FFE27A; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.character-badge-empty { color: #8597a6; text-transform: none; letter-spacing: 0; }
+
+.toolbar-actions { flex: none; margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.toolbar-actions button { height: 32px; }
+.ghost-button, .danger-button { margin-top: 0; padding: 0 10px; border-radius: 8px; font-size: 11px; white-space: nowrap; background: rgba(255,255,255,.07); color: #dceef9; }
+.danger-button { background: rgba(190, 56, 56, .24); color: #ffaaaa; }
+.mute-button { width: 32px; border-radius: 8px; background: rgba(255,255,255,.07); font-size: 14px; line-height: 1; cursor: pointer; }
+.mute-button:hover { background: rgba(255,255,255,.14); }
 .mute-button[aria-pressed="true"] { opacity: .7; }
-.chat-messages { min-height: 0; overflow: auto; padding: 9px 10px; display: grid; gap: 7px; align-content: start; }
-.chat-empty { color: #6e8799; font-size: 11px; line-height: 1.35; }
-.chat-message { display: grid; gap: 2px; font-size: 11px; padding: 6px 7px; border-radius: 8px; background: rgba(255,255,255,.05); }
-.chat-message strong { font-size: 10px; color: #8dcfff; }
-.team-chat.red .chat-message strong { color: #ff9a9a; }
+
+.team-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-messages { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; display: grid; gap: 7px; align-content: start; }
+.chat-empty { color: #6e8799; font-size: 13px; line-height: 1.35; }
+.chat-message { display: grid; gap: 2px; font-size: 13px; padding: 6px 9px; border-radius: 8px; background: rgba(255,255,255,.05); }
+.chat-message strong { font-size: 12px; color: #8dcfff; }
+.game-shell.red .chat-message strong { color: #ff9a9a; }
 .chat-message-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.chat-message time, .chat-system time { flex: none; font-size: 9px; color: #6e8799; font-variant-numeric: tabular-nums; }
+.chat-message time, .chat-system time { flex: none; font-size: 10px; color: #6e8799; font-variant-numeric: tabular-nums; }
 
 /* Avisos de sala: una línea, sin caja, con el color según el tipo. */
-.chat-system { display: flex; align-items: baseline; gap: 6px; padding: 1px 2px; font-size: 10px; font-style: italic; }
+.chat-system { display: flex; align-items: baseline; gap: 6px; padding: 1px 2px; font-size: 12px; font-style: italic; }
 .chat-system span { flex: 1; min-width: 0; }
 .chat-system span::before { font-style: normal; font-weight: 900; margin-right: 5px; }
 .chat-system.self { color: #7fd0ff; }
@@ -211,88 +262,94 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 .chat-system.leave span::before { content: '←'; }
 .chat-system.info { color: #9fb3c4; }
 .chat-system.info span::before { content: '•'; }
-.chat-form { display: grid; grid-template-columns: 1fr auto; gap: 5px; padding: 8px; border-top: 1px solid rgba(255,255,255,.08); }
-.chat-form input { min-width: 0; padding: 8px 9px; border-radius: 8px; font-size: 11px; }
-.chat-form button { width: 31px; border-radius: 8px; background: rgba(255,255,255,.1); color: #fff; font-weight: 900; }
+.chat-form { flex: none; display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 8px; border-top: 1px solid rgba(255,255,255,.08); }
+.chat-form input { min-width: 0; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+.chat-form button { width: 40px; border-radius: 8px; background: #F99E1A; color: #fff; font-weight: 900; font-size: 16px; cursor: pointer; }
+.chat-form button:hover { background: #ffad35; }
 
 /*
- * Mini-tablero del rival: 8×3 fichas rojas en 8:9, centradas y limitadas por la altura disponible.
- * Solo refleja cuántas fichas tiene bajadas el otro equipo, en posiciones aleatorias.
+ * Fichas del rival: una sola fila de mini-fichas de 26 px de alto. Solo refleja cuántas tiene bajadas
+ * el otro equipo, en posiciones aleatorias.
  */
-.opponent-board { min-width: 0; height: 100%; container-type: size; display: grid; place-items: end; }
-.opponent-grid {
-  --mini-gap: 4px;
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: var(--mini-gap);
-  width: min(100cqw, calc((100cqh - 2 * var(--mini-gap)) / 3 * 8 / 9 * 8 + 7 * var(--mini-gap)));
+.opponent-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(5, 17, 30, .94);
+  box-shadow: inset 0 2px 0 var(--rival);
 }
-.mini-card { position: relative; aspect-ratio: 8 / 9; overflow: hidden; border-radius: 4.5% / 4%; background: transparent; box-shadow: 0 4px 10px rgba(0,0,0,.25); }
+.opponent-title, .opponent-count { flex: 1 1 0; white-space: nowrap; }
+.opponent-title { font-size: 11px; font-weight: 900; letter-spacing: .1em; color: var(--rival-light); }
+.opponent-count { text-align: right; font-size: 12px; color: #92a9bc; font-variant-numeric: tabular-nums; }
+.opponent-count strong { color: #eef8ff; }
+.opponent-row { flex: none; display: flex; gap: 6px; }
+.mini-card { position: relative; height: 26px; aspect-ratio: 8 / 9; overflow: hidden; border-radius: 4.5% / 4%; background: transparent; box-shadow: 0 3px 7px rgba(0,0,0,.25); }
 .mini-face {
   position: absolute;
   inset: 0;
   background: #b61b1b;
-  border-top: 0.7cqw solid rgb(215 49 49);
+  border-top: 2px solid rgb(215 49 49);
   transition: transform .28s cubic-bezier(.2,.85,.2,1);
   will-change: transform;
 }
-.game-shell.blue .mini-face { border-right: 1.3cqw solid rgb(151 22 22); }
-.game-shell.red .mini-face { border-left: 1.3cqw solid rgb(151 22 22); }
+.game-shell.blue .mini-face { border-right: 3px solid rgb(151 22 22); }
+.game-shell.red .mini-face { border-left: 3px solid rgb(151 22 22); }
 .mini-card.is-down .mini-face { transform: translateY(80%); }
 
-.game-toolbar {
-  flex: none;
-  height: var(--head-h);
-  padding: 7px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,.12);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-  min-width: 0;
-  background: rgba(5, 17, 30, .94);
-}
-.game-toolbar.blue { box-shadow: inset 0 2px 0 #268fff; }
-.game-toolbar.red { box-shadow: inset 0 2px 0 #f05656; }
-.game-toolbar h1 { margin: 0 0 1px; font-size: 18px; line-height: 1.1; }
-.toolbar-meta { color: #92a9bc; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.toolbar-meta strong { color: #eef8ff; letter-spacing: .12em; }
-.toolbar-actions {
-  flex: none;
-  height: var(--actions-h);
-  padding: 6px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: rgba(5, 17, 30, .94);
-}
-.toolbar-actions.blue { box-shadow: inset 0 2px 0 #268fff; }
-.toolbar-actions.red { box-shadow: inset 0 2px 0 #f05656; }
-.ghost-button, .danger-button { margin-top: 0; padding: 6px 8px; border-radius: 8px; font-size: 11px; white-space: nowrap; background: rgba(255,255,255,.07); color: #dceef9; }
-.danger-button { background: rgba(190, 56, 56, .24); color: #ffaaaa; }
-
-/* El tablero ocupa la altura restante; el ancho se limita por ella para mantener las cartas en 8:9 (8×3). */
+/* El tablero ocupa la altura restante, centrado en vertical; el ancho se limita por ella (8×3, fichas 8:9). */
 .board-wrap {
   flex: 1;
   min-height: 0;
   container-type: size;
+  display: flex;
+  align-items: center;
 }
 
 .board-grid {
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(0, 1fr));
   gap: var(--board-gap);
   align-items: center;
-  height: 100%;
   width: min(100%, calc((100cqh - 2 * var(--board-gap)) / 3 * 8 / 9 * 8 + 7 * var(--board-gap)));
   margin: 0 auto;
 }
+
+/* Ventana de elegir personaje, dentro del lienzo para que escale con él. */
+.picker-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 8, 16, .78);
+  backdrop-filter: blur(6px);
+}
+.picker-panel {
+  width: 1240px;
+  padding: 30px 32px 26px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(16, 40, 70, .96), rgba(6, 16, 28, .98));
+  box-shadow: inset 0 3px 0 var(--team), 0 30px 80px rgba(0,0,0,.5);
+}
+.picker-panel h2 { margin: 6px 0 6px; font-size: 34px; }
+.picker-panel p { margin: 0 0 20px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+.picker-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
+.picker-card { cursor: pointer; transition: transform .14s ease, opacity .14s ease, filter .14s ease; }
+.picker-card:hover { transform: translateY(-3px); }
+.picker-card.is-selected { outline: 4px solid #FFD200; outline-offset: 3px; transform: translateY(-3px); }
+.picker-grid.has-selection .picker-card:not(.is-selected) { opacity: .55; }
+.picker-actions { display: flex; align-items: center; gap: 10px; margin-top: 22px; }
+.picker-selection { flex: 1; color: var(--muted); font-size: 15px; }
+.picker-selection strong { color: #FFE27A; text-transform: uppercase; }
+.picker-actions .danger-button { height: 44px; padding: 0 18px; font-size: 13px; }
+.picker-confirm { height: 44px; padding: 0 22px; border-radius: 10px; background: #F99E1A; color: #fff; font-weight: 900; font-size: 14px; cursor: pointer; }
+.picker-confirm:disabled { opacity: .42; cursor: not-allowed; }
+.picker-confirm:not(:disabled):hover { background: #ffad35; }
 
 /*
  * Ficha: marco rojo redondeado > marco degradado naranja-amarillo > retrato sobre fondo azul,
@@ -374,7 +431,6 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
 }
 .own-cursor-label.blue { border-left: 2px solid #2f9aff; }
 .own-cursor-label.red { border-left: 2px solid #ef5656; }
-.mobile-room-chip { display: none; }
 
 /*
  * Vista OBS (?obs=<clave>): fondo transparente y huecos de cámara vacíos para colocar las cámaras
@@ -382,17 +438,15 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
  */
 .obs-mode, .obs-mode body { background: transparent; }
 .obs-mode body { min-width: 0; }
-.game-shell.obs-view {
-  --cam-big-h: calc((100vh - 2 * var(--pad) - var(--head-h) - 2 * var(--gap)) / 2);
+.game-shell.obs-view, .obs-view .stage {
   background: transparent;
   pointer-events: none;
 }
-.obs-view .toolbar-actions, .obs-view .chat-form, .obs-view .mute-button, .obs-view .chat-empty { display: none; }
+.obs-view .toolbar-actions, .obs-view .chat-form, .obs-view .chat-empty { display: none; }
 /* Nadie hace scroll en OBS: sin barra; el chat sigue bajando solo al último mensaje. */
 .obs-view .chat-messages { overflow: hidden; scrollbar-width: none; }
 .obs-view .chat-messages::-webkit-scrollbar { display: none; }
-.obs-view .camera-slot { background: transparent; border-color: rgba(255,255,255,.25); }
-.obs-view .camera-slot::before { display: none; }
+.obs-view .camera-slot { background: transparent; }
 .obs-status { min-height: 100vh; display: grid; place-items: center; color: #dceef9; font-weight: 900; text-shadow: 0 1px 4px rgba(0,0,0,.9); }
 
 .setup-instructions { max-width: 760px; margin: 0 auto; line-height: 1.7; color: #a9bdcf; }
@@ -407,14 +461,4 @@ small { display: block; margin-top: 12px; color: #7e96ab; }
   .lobby-grid { grid-template-columns: 1fr; }
   .architecture-card { grid-template-columns: 1fr; }
   .architecture-card p { grid-column: auto; }
-  .game-shell, .game-shell.red { height: auto; min-height: 100vh; overflow: visible; flex-direction: column; }
-  .side-column { width: 100%; }
-  .side-cams { flex-direction: row; height: 150px; flex: none; }
-  .side-cams .camera-slot { width: auto; height: 100%; }
-  .top-stage, .game-shell.red .top-stage { height: auto; flex-direction: column; }
-  .top-stage .team-chat { flex: none; height: 190px; }
-  .top-stage .opponent-board { flex: none; height: 120px; }
-  .top-cams { height: 150px; }
-  .board-wrap { container-type: normal; flex: none; margin-bottom: 40px; }
-  .board-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: none; width: 100%; height: auto; }
 }

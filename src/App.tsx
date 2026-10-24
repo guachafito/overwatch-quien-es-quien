@@ -4,6 +4,7 @@ import { ensureAnonymousSession, isSupabaseConfigured, leaveRoomOnUnload, supaba
 import { CURSOR_HOTSPOT, CursorReceiver, CursorSender, setBoardElement } from './cursors'
 import type { CursorPacket } from './cursors'
 import {
+  chooseTeamCharacter,
   createRoom,
   getPlayers,
   getRoomByCode,
@@ -25,6 +26,15 @@ import type { ChatMessage, Player, Room, Slot, Team, TeamBoard } from './types'
 const TEAM_NAMES: Record<Team, string> = { 1: 'Equipo Azul', 2: 'Equipo Rojo' }
 const TEAM_COLORS: Record<Team, string> = { 1: 'blue', 2: 'red' }
 const SLOTS: Slot[] = [1, 2, 3, 4]
+
+// La sala se maqueta sobre un lienzo fijo de 1920×1080 que se escala entero a la ventana (con bandas si
+// no es 16:9): así las cámaras caen siempre en los mismos píxeles del vídeo.
+const STAGE_WIDTH = 1920
+const STAGE_HEIGHT = 1080
+
+function characterImage(character: string) {
+  return `${import.meta.env.BASE_URL}characters/${encodeURIComponent(character)}.png`
+}
 
 // Vista OBS (?obs=<clave del equipo>): espectador de solo lectura, sin puesto, presencia ni cursor propio.
 const OBS_KEY = new URLSearchParams(window.location.search).get('obs')?.trim() ?? ''
@@ -259,6 +269,7 @@ function App() {
   const initializedRef = useRef(false)
   const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
   const shellRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
   const ownLabelRef = useRef<HTMLDivElement>(null)
   const ownCursorImages = useScaledCursors(SPECTATING ? undefined : player?.slot)
   // Callbacks estables para los componentes memoizados: así un mensaje no vuelve a pintar el tablero.
@@ -298,6 +309,12 @@ function App() {
       if (incoming.version !== undefined && current.version !== undefined && incoming.version <= current.version) return current
       return { ...current, flipped: incoming.flipped, version: incoming.version ?? current.version }
     })
+  }, [])
+
+  // El personaje solo pasa de vacío a elegido, así que un valor vacío (respuesta antigua) se ignora.
+  const applyCharacter = useCallback((character: string | null | undefined) => {
+    if (!character) return
+    setServerBoard((current) => (current && current.character !== character ? { ...current, character } : current))
   }, [])
 
   // Une mensajes nuevos sin duplicar, en orden y quedándose con los 100 últimos.
@@ -530,6 +547,7 @@ function App() {
         syncedPlayers = state.players.length
         applyRoster(state.players)
         if (state.board) applyServerBoard(state.board)
+        applyCharacter(state.character)
         const rival = state.down?.[String(player.team === 1 ? 2 : 1)]
         if (rival) applyOpponentCount(rival.down, rival.v)
         // Algún mensaje se perdió (p. ej. durante un corte): se vuelven a leer los últimos.
@@ -625,6 +643,9 @@ function App() {
           }
           applyServerBoard(incoming)
         })
+        .on('broadcast', { event: 'character' }, ({ payload }) => {
+          applyCharacter((payload as { character?: string } | null)?.character)
+        })
         .on('broadcast', { event: 'chat' }, ({ payload }) => {
           const incoming = payload as ChatMessage
           if (!incoming?.id || incoming.team !== player.team) return
@@ -667,6 +688,22 @@ function App() {
     }
     // The callback is intentionally kept stable through refs/state below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, player])
+
+  // Escala el lienzo para que quepa entero en la ventana, centrado. Los cursores y avisos van fuera de
+  // él (position: fixed) y el tablero se mide con getBoundingClientRect, que ya incluye la escala.
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const fit = () => {
+      const scale = Math.min(window.innerWidth / STAGE_WIDTH, window.innerHeight / STAGE_HEIGHT)
+      const x = (window.innerWidth - STAGE_WIDTH * scale) / 2
+      const y = (window.innerHeight - STAGE_HEIGHT * scale) / 2
+      stage.style.transform = `translate(${x}px, ${y}px) scale(${scale})`
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
   }, [room, player])
 
   // Cerrar o recargar la pestaña cuenta como salir de la sala: se libera el puesto al momento.
@@ -874,6 +911,23 @@ function App() {
     }
   }
 
+  async function handleChooseCharacter(character: string) {
+    if (!supabase || !room || !player || SPECTATING) return
+    setBusy(true)
+    setError('')
+    try {
+      const chosen = await chooseTeamCharacter(supabase, room.id, player.team, character)
+      if (chosen) {
+        applyCharacter(chosen)
+        void teamChannelRef.current?.send({ type: 'broadcast', event: 'character', payload: { character: chosen } })
+      }
+    } catch (caught) {
+      setError(errorText(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handleCopyObsLink() {
     if (!serverBoard?.spectator_key) return setError('El enlace OBS aún no está disponible. Revisa que la migración esté aplicada.')
     const link = obsLink(serverBoard.spectator_key)
@@ -970,54 +1024,77 @@ function App() {
       className={`app-shell game-shell ${TEAM_COLORS[player.team]} ${ownCursorImages ? 'own-cursor' : ''} ${SPECTATING ? 'obs-view' : ''}`}
       style={ownCursorStyle}
     >
-      {/* El equipo rojo ve la misma distribución en espejo (ver .game-shell.red en styles.css). */}
-      <aside className="side-column">
-        <header className={`game-toolbar ${TEAM_COLORS[player.team]}`}>
-          <h1>{TEAM_NAMES[player.team]}</h1>
-          <div className="toolbar-meta">
-            Sala <strong>{room.code}</strong> · {onlineCount}/4 jugadores
-            {!SPECTATING && <> · Tú: {player.display_name}</>}
-          </div>
-        </header>
-        <div className={`toolbar-actions ${TEAM_COLORS[player.team]}`}>
-          <button className="ghost-button" onClick={handleReset} disabled={busy}>
-            Reiniciar mis fichas
-          </button>
-          <button className="ghost-button" onClick={handleCopyObsLink} title="Copia el enlace de la vista OBS de tu equipo">
-            Enlace OBS
-          </button>
-          <button className="danger-button" onClick={leaveRoom}>
-            Salir
-          </button>
-        </div>
-        <div className="side-cams">
+      {/* Lienzo de 1920×1080; el equipo rojo lo ve en espejo (ver .game-shell.red en styles.css). */}
+      <div className="stage" ref={stageRef}>
+        <aside className="team-cams">
           <div className="camera-slot" />
           <div className="camera-slot" />
-        </div>
-      </aside>
+        </aside>
 
-      <div className="main-column">
-        <div className="top-stage">
-          <TeamChat team={player.team} entries={chatEntries} muted={chatMuted} onToggleMute={onToggleMute} onSend={onSendChat} />
-          <OpponentBoard team={player.team === 1 ? 2 : 1} total={room.characters.length} down={opponentDown} />
-          <div className="top-cams">
-            <div className="camera-slot" />
-            <div className="camera-slot" />
+        <div className="stage-main">
+          <div className="top-row">
+            <section className="chat-panel">
+              <header className="game-toolbar">
+                <h1>{TEAM_NAMES[player.team]}</h1>
+                <div className="toolbar-meta">
+                  Sala <strong>{room.code}</strong> · {onlineCount}/4
+                </div>
+                <TeamCharacterBadge character={serverBoard?.character ?? null} />
+                <div className="toolbar-actions">
+                  <button
+                    type="button"
+                    className="mute-button"
+                    onClick={onToggleMute}
+                    aria-pressed={chatMuted}
+                    aria-label={chatMuted ? 'Activar sonido del chat' : 'Silenciar chat'}
+                    title={chatMuted ? 'Activar sonido del chat' : 'Silenciar chat'}
+                  >
+                    {chatMuted ? '🔕' : '🔔'}
+                  </button>
+                  <button className="ghost-button" onClick={handleReset} disabled={busy}>
+                    Reiniciar fichas
+                  </button>
+                  <button className="ghost-button" onClick={handleCopyObsLink} title="Copia el enlace de la vista OBS de tu equipo">
+                    Enlace OBS
+                  </button>
+                  <button className="danger-button" onClick={leaveRoom}>
+                    Salir
+                  </button>
+                </div>
+              </header>
+              <TeamChat entries={chatEntries} onSend={onSendChat} />
+            </section>
+            <div className="rival-cams">
+              <div className="camera-slot" />
+              <div className="camera-slot" />
+            </div>
           </div>
+
+          <OpponentStrip team={player.team === 1 ? 2 : 1} total={room.characters.length} down={opponentDown} />
+
+          <main className="board-wrap">
+            <section className="board-grid" aria-label="Personajes" ref={setBoardElement}>
+              {room.characters.map((character) => (
+                <CharacterCard
+                  key={character}
+                  character={character}
+                  isDown={flipped.has(character)}
+                  onToggle={onFlip}
+                />
+              ))}
+            </section>
+          </main>
         </div>
 
-        <main className="board-wrap">
-          <section className="board-grid" aria-label="Personajes" ref={setBoardElement}>
-            {room.characters.map((character) => (
-              <CharacterCard
-                key={character}
-                character={character}
-                isDown={flipped.has(character)}
-                onToggle={onFlip}
-              />
-            ))}
-          </section>
-        </main>
+        {!SPECTATING && serverBoard && !serverBoard.character && (
+          <CharacterPicker
+            team={player.team}
+            characters={room.characters}
+            busy={busy}
+            onChoose={handleChooseCharacter}
+            onLeave={leaveRoom}
+          />
+        )}
       </div>
 
       {notice && <div className="toast notice in-game">{notice}</div>}
@@ -1038,8 +1115,6 @@ function App() {
           {player.display_name}
         </div>
       </div>
-
-      <div className="mobile-room-chip">Sala {room.code}</div>
     </div>
   )
 }
@@ -1186,16 +1261,10 @@ function SetupScreen() {
 
 // El texto que se escribe vive aquí: teclear no vuelve a pintar la sala entera.
 const TeamChat = memo(function TeamChat({
-  team,
   entries,
-  muted,
-  onToggleMute,
   onSend,
 }: {
-  team: Team
   entries: ChatEntry[]
-  muted: boolean
-  onToggleMute: () => void
   onSend: (body: string) => void
 }) {
   const [input, setInput] = useState('')
@@ -1216,20 +1285,7 @@ const TeamChat = memo(function TeamChat({
   }, [entries])
 
   return (
-    <section className={`team-chat ${TEAM_COLORS[team]}`}>
-      <div className="chat-header">
-        <span>CHAT · {TEAM_NAMES[team]}</span>
-        <button
-          type="button"
-          className="mute-button"
-          onClick={onToggleMute}
-          aria-pressed={muted}
-          aria-label={muted ? 'Activar sonido del chat' : 'Silenciar chat'}
-          title={muted ? 'Activar sonido del chat' : 'Silenciar chat'}
-        >
-          {muted ? '🔕' : '🔔'}
-        </button>
-      </div>
+    <div className="team-chat">
       <div className="chat-messages" ref={messagesRef}>
         {!hasChat && <div className="chat-empty">Escribe algo. Solo lo verá tu equipo.</div>}
         {entries.map((entry) =>
@@ -1253,7 +1309,7 @@ const TeamChat = memo(function TeamChat({
         <input value={input} onChange={(event) => setInput(event.target.value)} maxLength={280} placeholder="Mensaje…" />
         <button type="submit" aria-label="Enviar mensaje">↵</button>
       </form>
-    </section>
+    </div>
   )
 })
 
@@ -1279,30 +1335,113 @@ const CharacterCard = memo(function CharacterCard({
   isDown: boolean
   onToggle: (character: string) => void
 }) {
-  // La longitud del nombre reduce el tamaño de letra para que quepa en una sola línea (ficha y etiqueta de bajada).
   return (
     <button
       className={`character-card ${isDown ? 'is-down' : ''}`}
       onClick={() => onToggle(character)}
       aria-pressed={isDown}
       data-name={character}
-      style={{ '--name-len': Math.max(character.length, 5), '--portrait-bg': portraitColor(character) } as CSSProperties}
+      style={cardStyle(character)}
     >
-      <div className="character-face">
-        <div className="card-frame">
-          <div className="portrait-frame">
-            <img src={`${import.meta.env.BASE_URL}characters/${encodeURIComponent(character)}.png`} alt={character} loading="lazy" />
-          </div>
-          <div className="character-name">{character}</div>
-        </div>
-      </div>
+      <CardFace character={character} />
     </button>
   )
 })
 
-// Tablero del rival en miniatura: refleja cuántas fichas tiene bajadas, pero no cuáles. Cada cambio
-// baja o sube fichas al azar, así que las posiciones no coinciden con las del tablero real.
-const OpponentBoard = memo(function OpponentBoard({ team, total, down }: { team: Team; total: number; down: number }) {
+// La longitud del nombre reduce el tamaño de letra para que quepa en una sola línea (ficha y etiqueta de bajada).
+function cardStyle(character: string) {
+  return { '--name-len': Math.max(character.length, 5), '--portrait-bg': portraitColor(character) } as CSSProperties
+}
+
+function CardFace({ character }: { character: string }) {
+  return (
+    <div className="character-face">
+      <div className="card-frame">
+        <div className="portrait-frame">
+          <img src={characterImage(character)} alt={character} loading="lazy" />
+        </div>
+        <div className="character-name">{character}</div>
+      </div>
+    </div>
+  )
+}
+
+// Indicador del personaje del equipo en la cabecera (el rival nunca lo recibe).
+function TeamCharacterBadge({ character }: { character: string | null }) {
+  return (
+    <div className={`character-badge ${character ? '' : 'is-empty'}`}>
+      {character && (
+        <span className="character-badge-portrait" style={{ '--portrait-bg': portraitColor(character) } as CSSProperties}>
+          <img src={characterImage(character)} alt="" />
+        </span>
+      )}
+      <span className="character-badge-text">
+        Vuestro personaje: {character ? character : <span className="character-badge-empty">Sin elegir</span>}
+      </span>
+    </div>
+  )
+}
+
+// Ventana para elegir el personaje del equipo. Sale a quien entra mientras su equipo no tenga uno; en
+// cuanto uno de los dos lo confirma se cierra también para el compañero.
+function CharacterPicker({
+  team,
+  characters,
+  busy,
+  onChoose,
+  onLeave,
+}: {
+  team: Team
+  characters: string[]
+  busy: boolean
+  onChoose: (character: string) => void
+  onLeave: () => void
+}) {
+  const [selected, setSelected] = useState<string | null>(null)
+  const rival = TEAM_NAMES[team === 1 ? 2 : 1]
+
+  return (
+    <div className="picker-overlay" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+      <div className={`picker-panel ${TEAM_COLORS[team]}`}>
+        <span className="panel-label">{TEAM_NAMES[team].toUpperCase()}</span>
+        <h2 id="picker-title">Elegid vuestro personaje</h2>
+        <p>
+          Es el héroe que el {rival} tendrá que adivinar. Solo lo veis vosotros. Lo elige uno de los dos y,
+          una vez confirmado, no se puede cambiar.
+        </p>
+        <div className={`picker-grid ${selected ? 'has-selection' : ''}`}>
+          {characters.map((character) => (
+            <button
+              type="button"
+              key={character}
+              className={`character-card picker-card ${selected === character ? 'is-selected' : ''}`}
+              onClick={() => setSelected(character)}
+              aria-pressed={selected === character}
+              style={cardStyle(character)}
+            >
+              <CardFace character={character} />
+            </button>
+          ))}
+        </div>
+        <div className="picker-actions">
+          <span className="picker-selection">
+            {selected ? <>Elegido: <strong>{selected}</strong></> : 'Pulsa un héroe para elegirlo.'}
+          </span>
+          <button type="button" className="danger-button" onClick={onLeave}>
+            Salir
+          </button>
+          <button type="button" className="picker-confirm" disabled={!selected || busy} onClick={() => selected && onChoose(selected)}>
+            Confirmar personaje
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Fichas del rival en miniatura: refleja cuántas tiene bajadas, pero no cuáles. Cada cambio baja o
+// sube fichas al azar, así que las posiciones no coinciden con las del tablero real.
+const OpponentStrip = memo(function OpponentStrip({ team, total, down }: { team: Team; total: number; down: number }) {
   const [downSlots, setDownSlots] = useState<Set<number>>(() => new Set())
 
   useEffect(() => {
@@ -1321,14 +1460,18 @@ const OpponentBoard = memo(function OpponentBoard({ team, total, down }: { team:
   }, [down, total])
 
   return (
-    <section className="opponent-board" aria-label={`Tablero del ${TEAM_NAMES[team]}: ${downSlots.size} fichas bajadas`}>
-      <div className="opponent-grid">
+    <section className={`opponent-strip ${TEAM_COLORS[team]}`} aria-label={`Tablero del ${TEAM_NAMES[team]}: ${downSlots.size} fichas bajadas`}>
+      <span className="opponent-title">FICHAS DEL {TEAM_NAMES[team].toUpperCase()}</span>
+      <div className="opponent-row">
         {Array.from({ length: total }, (_, index) => (
           <div key={index} className={`mini-card ${downSlots.has(index) ? 'is-down' : ''}`}>
             <div className="mini-face" />
           </div>
         ))}
       </div>
+      <span className="opponent-count">
+        <strong>{downSlots.size}</strong> / {total} bajadas
+      </span>
     </section>
   )
 })

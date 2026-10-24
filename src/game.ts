@@ -143,6 +143,17 @@ export async function resetTeamBoard(supabase: SupabaseClient, roomId: string, t
   return (data?.[0] as TeamBoard | undefined) ?? null
 }
 
+// Fija el personaje del equipo si aún no tiene; devuelve el que quede (el del compañero si se adelantó).
+export async function chooseTeamCharacter(supabase: SupabaseClient, roomId: string, team: Team, character: string) {
+  const { data, error } = await supabase.rpc('choose_team_character', {
+    p_room_id: roomId,
+    p_team: team,
+    p_character: character,
+  })
+  if (error) throw error
+  return (data as string | null) ?? null
+}
+
 // Entra como espectador del equipo dueño de la clave (vista OBS): no ocupa puesto ni puede modificar nada.
 export async function spectateTeam(supabase: SupabaseClient, key: string) {
   const { data, error } = await supabase.rpc('spectate_team', { p_key: key })
@@ -172,6 +183,7 @@ export type RoomSync =
       players: RosterPlayer[]
       board: { flipped: string[]; version: number } | null
       last_message_id: number | null
+      character?: string | null
       // Fichas bajadas por equipo ("1" / "2") con la versión de su tablero.
       down?: Record<string, { down: number; v: number }>
     }
