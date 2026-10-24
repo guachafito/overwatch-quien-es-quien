@@ -300,13 +300,13 @@ body:has(.game-shell) { min-width: 0; overflow: hidden; }
 .game-shell.red .mini-face { border-left: 3px solid rgb(151 22 22); }
 .mini-card.is-down .mini-face { transform: translateY(80%); }
 
-/* El tablero ocupa la altura restante, centrado en vertical; el ancho se limita por ella (8×3, fichas 8:9). */
+/* El tablero ocupa la altura restante; el ancho se limita por ella (8×3, fichas 8:9). */
 .board-wrap {
   flex: 1;
   min-height: 0;
   container-type: size;
   display: flex;
-  align-items: center;
+  align-items: normal;
 }
 
 .board-grid {
@@ -346,7 +346,9 @@ body:has(.game-shell) { min-width: 0; overflow: hidden; }
 .picker-actions { display: flex; align-items: center; gap: 10px; margin-top: 22px; }
 .picker-selection { flex: 1; color: var(--muted); font-size: 15px; }
 .picker-selection strong { color: #FFE27A; text-transform: uppercase; }
-.picker-actions .danger-button { height: 44px; padding: 0 18px; font-size: 13px; }
+.picker-actions .danger-button, .picker-actions .ghost-button { height: 44px; padding: 0 18px; font-size: 13px; }
+.picker-room { height: 44px; display: flex; align-items: center; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); color: #92a9bc; font-size: 13px; white-space: nowrap; }
+.picker-room strong { margin-left: 6px; color: #eef8ff; letter-spacing: .12em; }
 .picker-confirm { height: 44px; padding: 0 22px; border-radius: 10px; background: #F99E1A; color: #fff; font-weight: 900; font-size: 14px; cursor: pointer; }
 .picker-confirm:disabled { opacity: .42; cursor: not-allowed; }
 .picker-confirm:not(:disabled):hover { background: #ffad35; }

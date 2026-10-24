@@ -1123,6 +1123,7 @@ function App() {
         {serverBoard && !serverBoard.character && (
           <CharacterPicker
             team={player.team}
+            roomCode={room.code}
             characters={room.characters}
             pick={teamPick}
             ownId={player.user_id}
@@ -1130,6 +1131,7 @@ function App() {
             busy={busy}
             onPick={handlePick}
             onChoose={handleChooseCharacter}
+            onCopyObsLink={handleCopyObsLink}
             onLeave={leaveRoom}
           />
         )}
@@ -1432,9 +1434,12 @@ function CharacterPicker({
   busy,
   onPick,
   onChoose,
+  onCopyObsLink,
   onLeave,
+  roomCode,
 }: {
   team: Team
+  roomCode: string
   characters: string[]
   pick: TeamPick | null
   ownId: string
@@ -1442,6 +1447,7 @@ function CharacterPicker({
   busy: boolean
   onPick: (character: string) => void
   onChoose: (character: string) => void
+  onCopyObsLink: () => void
   onLeave: () => void
 }) {
   const selected = pick?.character ?? null
@@ -1482,6 +1488,12 @@ function CharacterPicker({
           </span>
           {!readOnly && (
             <>
+              <span className="picker-room">
+                Sala <strong>{roomCode}</strong>
+              </span>
+              <button type="button" className="ghost-button" onClick={onCopyObsLink} title="Copia el enlace de la vista OBS de tu equipo">
+                Enlace OBS
+              </button>
               <button type="button" className="danger-button" onClick={onLeave}>
                 Salir
               </button>
