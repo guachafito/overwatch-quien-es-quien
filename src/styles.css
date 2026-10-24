@@ -442,9 +442,11 @@ body:has(.game-shell) { min-width: 0; overflow: hidden; }
 .obs-mode, .obs-mode body { background: transparent; }
 .obs-mode body { min-width: 0; }
 .game-shell.obs-view, .obs-view .stage {
-  background: transparent;
+  background-color: transparent;
   pointer-events: none;
 }
+/* La imagen de fondo (una por equipo) la pone App; ocupa el lienzo entero de 1920×1080. */
+.obs-view .stage { background-size: 1920px 1080px; background-repeat: no-repeat; }
 .obs-view .toolbar-actions, .obs-view .chat-form, .obs-view .chat-empty { display: none; }
 /* Nadie hace scroll en OBS: sin barra; el chat sigue bajando solo al último mensaje. */
 .obs-view .chat-messages { overflow: hidden; scrollbar-width: none; }

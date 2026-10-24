@@ -1064,6 +1064,10 @@ function App() {
   const ownCursorStyle = ownCursorImages
     ? ({ '--own-cursor': cursorCss(ownCursorImages.up), '--own-cursor-down': cursorCss(ownCursorImages.down) } as CSSProperties)
     : undefined
+  // Fondo de la vista OBS, uno por equipo, con huecos transparentes donde van las cámaras.
+  const stageStyle = SPECTATING
+    ? { backgroundImage: `url("${import.meta.env.BASE_URL}backgrounds/${player.team === 1 ? 'obs-azul' : 'obs-rojo'}.png")` }
+    : undefined
 
   return (
     <div
@@ -1072,7 +1076,7 @@ function App() {
       style={ownCursorStyle}
     >
       {/* Lienzo de 1920×1080; el equipo rojo lo ve en espejo (ver .game-shell.red en styles.css). */}
-      <div className="stage" ref={stageRef}>
+      <div className="stage" ref={stageRef} style={stageStyle}>
         <aside className="team-cams">
           <div className="camera-slot" />
           <div className="camera-slot" />
