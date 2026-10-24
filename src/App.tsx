@@ -1087,9 +1087,12 @@ function App() {
             <section className="chat-panel">
               <header className="game-toolbar">
                 <h1>{TEAM_NAMES[player.team]}</h1>
-                <div className="toolbar-meta">
-                  Sala <strong>{room.code}</strong> · {onlineCount}/4
-                </div>
+                {/* En la vista OBS solo se ven el equipo y su personaje. */}
+                {!SPECTATING && (
+                  <div className="toolbar-meta">
+                    Sala <strong>{room.code}</strong> · {onlineCount}/4
+                  </div>
+                )}
                 <TeamCharacterBadge character={serverBoard?.character ?? null} />
                 <div className="toolbar-actions">
                   <button
