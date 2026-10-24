@@ -169,7 +169,7 @@ type RemotePlayer = { userId: string; slot: Slot; name: string }
 
 // Héroe marcado en la ventana de elegir personaje antes de confirmarlo. Es uno por equipo: viaja por el
 // canal del equipo y gana el de `at` más alto (y `by` para desempatar), así los dos acaban con el mismo.
-type TeamPick = { character: string; at: number; by: string; name: string }
+type TeamPick = { character: string; at: number; by: string }
 
 function isNewerPick(incoming: TeamPick, current: TeamPick | null) {
   return !current || incoming.at > current.at || (incoming.at === current.at && incoming.by > current.by)
@@ -940,7 +940,7 @@ function App() {
   function handlePick(character: string) {
     if (!player || SPECTATING) return
     const at = Math.max(Date.now(), (teamPickRef.current?.at ?? 0) + 1)
-    const pick: TeamPick = { character, at, by: player.user_id, name: player.display_name }
+    const pick: TeamPick = { character, at, by: player.user_id }
     applyPick(pick)
     void teamChannelRef.current?.send({ type: 'broadcast', event: 'pick', payload: pick })
   }
@@ -970,6 +970,16 @@ function App() {
       setNotice('Enlace OBS copiado. Pégalo como URL de una fuente de navegador.')
     } catch {
       window.prompt('Copia el enlace OBS:', link)
+    }
+  }
+
+  async function handleCopyRoomCode() {
+    if (!room) return
+    try {
+      await navigator.clipboard.writeText(room.code)
+      setNotice(`Código de sala copiado: ${room.code}`)
+    } catch {
+      window.prompt('Copia el código de la sala:', room.code)
     }
   }
 
@@ -1009,12 +1019,15 @@ function App() {
   const remotePlayers = useMemo(() => {
     const list = new Map<string, RemotePlayer>()
     if (!player) return []
+    // La vista OBS no tiene cursor propio: pinta a todos, aunque comparta sesión con un jugador
+    // (enlace abierto en el mismo navegador).
+    const isSelf = (id: string) => !SPECTATING && id === player.user_id
     for (const candidate of roster) {
-      if (candidate.user_id === player.user_id || candidate.team !== player.team) continue
+      if (isSelf(candidate.user_id) || candidate.team !== player.team) continue
       list.set(candidate.user_id, { userId: candidate.user_id, slot: candidate.slot, name: candidate.display_name })
     }
     for (const remote of Object.values(packetUsers)) {
-      if (remote.userId !== player.user_id && !list.has(remote.userId)) list.set(remote.userId, remote)
+      if (!isSelf(remote.userId) && !list.has(remote.userId)) list.set(remote.userId, remote)
     }
     return [...list.values()]
   }, [roster, packetUsers, player])
@@ -1126,12 +1139,12 @@ function App() {
             roomCode={room.code}
             characters={room.characters}
             pick={teamPick}
-            ownId={player.user_id}
             readOnly={SPECTATING}
             busy={busy}
             onPick={handlePick}
             onChoose={handleChooseCharacter}
             onCopyObsLink={handleCopyObsLink}
+            onCopyRoomCode={handleCopyRoomCode}
             onLeave={leaveRoom}
           />
         )}
@@ -1429,12 +1442,12 @@ function CharacterPicker({
   team,
   characters,
   pick,
-  ownId,
   readOnly,
   busy,
   onPick,
   onChoose,
   onCopyObsLink,
+  onCopyRoomCode,
   onLeave,
   roomCode,
 }: {
@@ -1442,12 +1455,12 @@ function CharacterPicker({
   roomCode: string
   characters: string[]
   pick: TeamPick | null
-  ownId: string
   readOnly: boolean
   busy: boolean
   onPick: (character: string) => void
   onChoose: (character: string) => void
   onCopyObsLink: () => void
+  onCopyRoomCode: () => void
   onLeave: () => void
 }) {
   const selected = pick?.character ?? null
@@ -1480,17 +1493,14 @@ function CharacterPicker({
         <div className="picker-actions">
           <span className="picker-selection">
             {pick ? (
-              <>
-                Elegido: <strong>{pick.character}</strong>
-                {pick.by !== ownId && <> · lo ha marcado {pick.name}</>}
-              </>
+              <>Elegido: <strong>{pick.character}</strong></>
             ) : readOnly ? 'Esperando a que el equipo elija…' : 'Pulsa un héroe para elegirlo.'}
           </span>
           {!readOnly && (
             <>
-              <span className="picker-room">
+              <button type="button" className="picker-room" onClick={onCopyRoomCode} title="Copia el código de la sala">
                 Sala <strong>{roomCode}</strong>
-              </span>
+              </button>
               <button type="button" className="ghost-button" onClick={onCopyObsLink} title="Copia el enlace de la vista OBS de tu equipo">
                 Enlace OBS
               </button>
