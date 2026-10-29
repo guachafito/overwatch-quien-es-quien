@@ -52,7 +52,7 @@ El cursor de los cuatro jugadores es:
 public/cursors/cursor.png
 ```
 
-Es un PNG transparente de 58×96 px (el doble del tamaño en pantalla, 29×48) con la punta en la esquina superior izquierda.
+Es un PNG transparente de 58×96 px (4 veces el tamaño en pantalla, 15×24) con la punta en la esquina superior izquierda.
 
 La aplicación tiene un cursor de fallback para que la web no se quede inutilizable si alguno no está todavía.
 

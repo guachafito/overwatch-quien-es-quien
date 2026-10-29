@@ -52,13 +52,13 @@ const CURSOR_ANCHORS: Record<Slot, { x: number; y: number }> = {
   4: { x: 0.88, y: 0.62 },
 }
 
-// El mismo cursor para los cuatro jugadores. El PNG está al doble de tamaño para pantallas de alta densidad.
+// El mismo cursor para los cuatro jugadores. El PNG está a 4 veces su tamaño para pantallas de alta densidad.
 const CURSOR_FILE = `${import.meta.env.BASE_URL}cursors/cursor.png`
 
 // Tamaño con el que se dibuja el cursor (ver .remote-cursor en styles.css).
-const CURSOR_WIDTH = 29
-const CURSOR_HEIGHT = 48
-const OWN_LABEL_OFFSET = { x: 26, y: 38 }
+const CURSOR_WIDTH = 15
+const CURSOR_HEIGHT = 24
+const OWN_LABEL_OFFSET = { x: 14, y: 20 }
 
 // El cursor nativo se dibuja al tamaño del PNG, así que se reduce en un canvas al tamaño en pantalla.
 function scaleCursor(src: string) {
