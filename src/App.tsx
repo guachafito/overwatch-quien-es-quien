@@ -52,32 +52,26 @@ const CURSOR_ANCHORS: Record<Slot, { x: number; y: number }> = {
   4: { x: 0.88, y: 0.62 },
 }
 
-function getSlotCursorFile(slot: Slot, down: boolean) {
-  const secondStyle = slot % 2 === 0
-  if (secondStyle) return down
-    ? `${import.meta.env.BASE_URL}cursors/cursoragarrando2.png`
-    : `${import.meta.env.BASE_URL}cursors/cursor2.png`
-  return down
-    ? `${import.meta.env.BASE_URL}cursors/cursoragarrando.png`
-    : `${import.meta.env.BASE_URL}cursors/cursor.png`
-}
+// El mismo cursor para los cuatro jugadores. El PNG está al doble de tamaño para pantallas de alta densidad.
+const CURSOR_FILE = `${import.meta.env.BASE_URL}cursors/cursor.png`
 
-// Tamaño con el que se dibujan los cursores remotos (ver .remote-cursor en styles.css).
-const CURSOR_SIZE = 58
-const OWN_LABEL_OFFSET = { x: 30, y: 32 }
+// Tamaño con el que se dibuja el cursor (ver .remote-cursor en styles.css).
+const CURSOR_WIDTH = 29
+const CURSOR_HEIGHT = 48
+const OWN_LABEL_OFFSET = { x: 26, y: 38 }
 
-// Los navegadores no admiten cursores nativos de más de 128 px, así que los PNG se reducen en un canvas.
+// El cursor nativo se dibuja al tamaño del PNG, así que se reduce en un canvas al tamaño en pantalla.
 function scaleCursor(src: string) {
   return new Promise<string>((resolve, reject) => {
     const image = new Image()
     image.onload = () => {
       const canvas = document.createElement('canvas')
-      canvas.width = CURSOR_SIZE
-      canvas.height = CURSOR_SIZE
+      canvas.width = CURSOR_WIDTH
+      canvas.height = CURSOR_HEIGHT
       const context = canvas.getContext('2d')
       if (!context) return reject(new Error('Canvas no disponible'))
       context.imageSmoothingQuality = 'high'
-      context.drawImage(image, 0, 0, CURSOR_SIZE, CURSOR_SIZE)
+      context.drawImage(image, 0, 0, CURSOR_WIDTH, CURSOR_HEIGHT)
       resolve(canvas.toDataURL('image/png'))
     }
     image.onerror = reject
@@ -85,26 +79,26 @@ function scaleCursor(src: string) {
   })
 }
 
-function useScaledCursors(slot: Slot | undefined) {
-  const [cursors, setCursors] = useState<{ up: string; down: string } | null>(null)
+function useScaledCursor(enabled: boolean) {
+  const [cursor, setCursor] = useState<string | null>(null)
 
   useEffect(() => {
-    setCursors(null)
-    if (!slot) return
+    setCursor(null)
+    if (!enabled) return
     let alive = true
-    Promise.all([scaleCursor(getSlotCursorFile(slot, false)), scaleCursor(getSlotCursorFile(slot, true))])
-      .then(([up, down]) => {
-        if (alive) setCursors({ up, down })
+    scaleCursor(CURSOR_FILE)
+      .then((url) => {
+        if (alive) setCursor(url)
       })
       .catch(() => {
-        // Si las imágenes no cargan se queda el cursor normal del sistema.
+        // Si la imagen no carga se queda el cursor normal del sistema.
       })
     return () => {
       alive = false
     }
-  }, [slot])
+  }, [enabled])
 
-  return cursors
+  return cursor
 }
 
 function cursorCss(dataUrl: string) {
@@ -279,10 +273,9 @@ function App() {
   const currentDownRef = useRef(false)
   const initializedRef = useRef(false)
   const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
-  const shellRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const ownLabelRef = useRef<HTMLDivElement>(null)
-  const ownCursorImages = useScaledCursors(SPECTATING ? undefined : player?.slot)
+  const ownCursorImage = useScaledCursor(!SPECTATING && Boolean(player))
   // Callbacks estables para los componentes memoizados: así un mensaje no vuelve a pintar el tablero.
   const handleFlipRef = useRef(handleFlip)
   handleFlipRef.current = handleFlip
@@ -764,7 +757,6 @@ function App() {
     }
     const setDown = (down: boolean, x: number, y: number) => {
       currentDownRef.current = down
-      shellRef.current?.classList.toggle('pointer-down', down)
       if (x >= 0) senderRef.current?.sample(x, y, down, true)
     }
     const down = (event: PointerEvent) => setDown(true, event.clientX, event.clientY)
@@ -1061,9 +1053,7 @@ function App() {
   }
 
   const onlineCount = Math.min(4, roster.length)
-  const ownCursorStyle = ownCursorImages
-    ? ({ '--own-cursor': cursorCss(ownCursorImages.up), '--own-cursor-down': cursorCss(ownCursorImages.down) } as CSSProperties)
-    : undefined
+  const ownCursorStyle = ownCursorImage ? ({ '--own-cursor': cursorCss(ownCursorImage) } as CSSProperties) : undefined
   // Fondo de la vista OBS, uno por equipo, con huecos transparentes donde van las cámaras.
   const stageStyle = SPECTATING
     ? { backgroundImage: `url("${import.meta.env.BASE_URL}backgrounds/${player.team === 1 ? 'obs-azul' : 'obs-rojo'}.png")` }
@@ -1071,8 +1061,7 @@ function App() {
 
   return (
     <div
-      ref={shellRef}
-      className={`app-shell game-shell ${TEAM_COLORS[player.team]} ${ownCursorImages ? 'own-cursor' : ''} ${SPECTATING ? 'obs-view' : ''}`}
+      className={`app-shell game-shell ${TEAM_COLORS[player.team]} ${ownCursorImage ? 'own-cursor' : ''} ${SPECTATING ? 'obs-view' : ''}`}
       style={ownCursorStyle}
     >
       {/* Lienzo de 1920×1080; el equipo rojo lo ve en espejo (ver .game-shell.red en styles.css). */}
@@ -1588,8 +1577,7 @@ const RemoteCursor = memo(function RemoteCursor({
   // Las dos imágenes se cargan desde el principio: al hacer clic solo cambia cuál se ve.
   return (
     <div ref={elementRef} className={`remote-cursor ${TEAM_COLORS[team]}`}>
-      <img className="cursor-up" src={getSlotCursorFile(slot, false)} alt="" />
-      <img className="cursor-down" src={getSlotCursorFile(slot, true)} alt="" />
+      <img src={CURSOR_FILE} alt="" />
       <span>{name}</span>
     </div>
   )

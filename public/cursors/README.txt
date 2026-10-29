@@ -1,8 +1,4 @@
-Añade aquí estos cuatro archivos:
-  cursor.png
-  cursoragarrando.png
-  cursor2.png
-  cursoragarrando2.png
+cursor.png = cursor de los cuatro jugadores.
 
-cursor.png/cursoragarrando.png = jugador de slot impar dentro del equipo.
-cursor2.png/cursoragarrando2.png = jugador de slot par dentro del equipo.
+PNG transparente de 58x96 px (el doble del tamaño en pantalla, 29x48) con la punta en la esquina
+superior izquierda. Si se cambia por otra imagen, mantener esa proporción y la punta en la esquina.

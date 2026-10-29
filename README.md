@@ -13,7 +13,7 @@ Web multijugador diseñada para reproducir el juego de **Quién es Quién** con 
 - El chat central es privado por equipo: Azul solo ve Azul y Rojo solo ve Rojo.
 - Hay 4 puestos: 2 jugadores por equipo.
 - Los cuatro cursores se muestran en grande y se sincronizan en tiempo real.
-- `cursor.png` / `cursoragarrando.png` y `cursor2.png` / `cursoragarrando2.png` se usan según el puesto del jugador.
+- Los cuatro jugadores usan el mismo cursor: `public/cursors/cursor.png`.
 - Arriba quedan reservados los cuatro huecos cuadrados para futuras cámaras y el chat en el centro.
 
 ## 1. Añadir personajes
@@ -46,18 +46,13 @@ Necesitas **mínimo 24 PNG**.
 
 ## 2. Añadir los cursores
 
-Mete estos cuatro archivos en:
+El cursor de los cuatro jugadores es:
 
 ```text
-public/cursors/
+public/cursors/cursor.png
 ```
 
-```text
-cursor.png
-cursoragarrando.png
-cursor2.png
-cursoragarrando2.png
-```
+Es un PNG transparente de 58×96 px (el doble del tamaño en pantalla, 29×48) con la punta en la esquina superior izquierda.
 
 La aplicación tiene un cursor de fallback para que la web no se quede inutilizable si alguno no está todavía.
 
@@ -172,7 +167,7 @@ Cada navegador envía la posición normalizada de su cursor mediante Realtime Br
 
 La posición se transmite aproximadamente cada 35 ms como máximo para no mandar una petición por cada pixel de movimiento.
 
-Al pulsar el botón del ratón el cursor cambia a `cursoragarrando*.png` y al soltar vuelve al cursor normal.
+Al pulsar el botón del ratón, el cursor de los compañeros (y el de la vista OBS) se encoge un poco y al soltar vuelve a su tamaño.
 
 ## 7. Publicarlo gratis
 

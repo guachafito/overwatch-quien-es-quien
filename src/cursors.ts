@@ -23,7 +23,8 @@ const SCALE = 10000
 const OFFSET_WINDOW = 40
 const OFFSET_SLEW = 0.08
 
-export const CURSOR_HOTSPOT = 4
+// Punta del cursor dentro de la imagen (esquina superior izquierda).
+export const CURSOR_HOTSPOT = 1
 
 // Paquete de cursor: `t` es la hora (Date.now del emisor) de la primera muestra, `w` cuánto después de
 // `t` se envió, `p` las muestras [dt, x, y, pulsado] y `f` los clics en fichas [dt, personaje, bajada].
